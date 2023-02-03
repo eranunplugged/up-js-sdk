@@ -22,7 +22,7 @@ limitations under the License.
  */
 
 import { v4 as uuidv4 } from "uuid";
-import { parse as parseSdp, write as writeSdp } from "sdp-transform";
+import { parse as parseSdp, SessionDescription, write as writeSdp } from "sdp-transform";
 
 import { logger } from "../logger";
 import * as utils from "../utils";
@@ -60,6 +60,7 @@ import { DeviceInfo } from "../crypto/deviceinfo";
 import { IScreensharingOpts } from "./mediaHandler";
 import { GroupCallUnknownDeviceError } from "./groupCall";
 import { MatrixError } from "../http-api";
+import { Media, SDPParser } from "./sdp";
 
 interface CallOpts {
     // The room ID for this call.
@@ -432,6 +433,11 @@ export class MatrixCall extends TypedEventEmitter<CallEvent, CallEventHandlerMap
 
     // our transceivers for each purpose and type of media
     private transceivers = new Map<TransceiverKey, RTCRtpTransceiver>();
+
+    // When we connect via the SFU then we separate transceivers between incoming (remote) and outgoing (local) streams.
+    // This makes it easier to reuse transceivers. Transceivers handling incoming streams are always set to recvonly and
+    // transceivers handling outgoing streams are always set to sendonly.
+    private remoteTransceivers = new Map<number, RTCRtpTransceiver>();
 
     private inviteOrAnswerSent = false;
     private waitForLocalAVStream = false;
@@ -966,7 +972,7 @@ export class MatrixCall extends TypedEventEmitter<CallEvent, CallEventHandlerMap
                         // (It's fine to specify the parameter on Firefox too,
                         // it just won't work.)
                         sendEncodings: this.isFocus ? encodings : undefined,
-                        direction: callFeed.purpose === SDPStreamMetadataPurpose.Usermedia ? "sendrecv" : "sendonly",
+                        direction: "sendonly",
                     });
 
                     if (this.isFocus && isFirefox()) {
@@ -2519,7 +2525,36 @@ export class MatrixCall extends TypedEventEmitter<CallEvent, CallEventHandlerMap
 
     private onSignallingStateChanged = (): void => {
         logger.debug(`call ${this.callId}: Signalling state changed to: ${this.peerConn?.signalingState}`);
+        if (this.peerConn?.signalingState === 'have-remote-offer') {
+            // this.onRemoteOffer();
+        }
     };
+
+    // create a new transceiver for every remote Track
+    private onRemoteOffer(): void {
+        const remoteSDP = this.peerConn?.remoteDescription;
+        if(!remoteSDP) {
+            return;
+        }
+        const sdp: SessionDescription = parseSdp(remoteSDP.sdp);
+        sdp.media.forEach((media) => {
+            if(this.remoteTransceivers.has(Number(media.mid))) {
+                // Check if the transceiver can receive. Make sure the transceiver can receive this offer
+                logger.log("#### Have transceiver: ", media.mid, media.direction);
+            } else {
+                // Create a new remote transceiver which can receive
+                if(!media.direction) {
+                    media.direction = "recvonly";
+                }
+                logger.log("#### Create transceiver: ", media.mid, media.type, media.direction);
+                const newTransceiver = this.peerConn?.addTransceiver(media.type, { direction: media.direction });
+                if(newTransceiver) {
+                    logger.log("#### Add transceiver: ", newTransceiver.mid, newTransceiver.direction);
+                    this.remoteTransceivers.set(Number(media.mid), newTransceiver);
+                }
+            }
+        });
+    }
 
     private onTrack = (ev: RTCTrackEvent): void => {
         if (ev.streams.length === 0) {
