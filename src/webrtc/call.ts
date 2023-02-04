@@ -60,7 +60,6 @@ import { DeviceInfo } from "../crypto/deviceinfo";
 import { IScreensharingOpts } from "./mediaHandler";
 import { GroupCallUnknownDeviceError } from "./groupCall";
 import { MatrixError } from "../http-api";
-import { Media, SDPParser } from "./sdp";
 
 interface CallOpts {
     // The room ID for this call.
@@ -2002,7 +2001,7 @@ export class MatrixCall extends TypedEventEmitter<CallEvent, CallEventHandlerMap
         }
 
         try {
-            await this.peerConn!.setRemoteDescription(content.answer);
+            await this.peerConn!.setRemoteDescription(this.mungeRemoteSDP(content.answer));
         } catch (e) {
             logger.debug(`Call ${this.callId} Failed to set remote description`, e);
             this.terminate(CallParty.Local, CallErrorCode.SetRemoteDescription, false);
@@ -2087,7 +2086,7 @@ export class MatrixCall extends TypedEventEmitter<CallEvent, CallEventHandlerMap
         }
 
         try {
-            await this.peerConn!.setRemoteDescription(description);
+            await this.peerConn!.setRemoteDescription(this.mungeRemoteSDP(description));
 
             if (description.type === "offer") {
                 let answer: RTCSessionDescriptionInit;
@@ -2525,35 +2524,33 @@ export class MatrixCall extends TypedEventEmitter<CallEvent, CallEventHandlerMap
 
     private onSignallingStateChanged = (): void => {
         logger.debug(`call ${this.callId}: Signalling state changed to: ${this.peerConn?.signalingState}`);
-        if (this.peerConn?.signalingState === 'have-remote-offer') {
+        if (this.peerConn?.signalingState === "have-remote-offer") {
             // this.onRemoteOffer();
         }
     };
 
-    // create a new transceiver for every remote Track
-    private onRemoteOffer(): void {
-        const remoteSDP = this.peerConn?.remoteDescription;
-        if(!remoteSDP) {
-            return;
+    // swap transceiver for every remote Track
+    private mungeRemoteSDP(remoteSDP: RTCSessionDescription): RTCSessionDescription {
+        if (!this.peerConn || !this.isFocus) {
+            return remoteSDP;
         }
+        // get all current transceivers
+        const transceivers = this.peerConn.getTransceivers();
         const sdp: SessionDescription = parseSdp(remoteSDP.sdp);
         sdp.media.forEach((media) => {
-            if(this.remoteTransceivers.has(Number(media.mid))) {
-                // Check if the transceiver can receive. Make sure the transceiver can receive this offer
-                logger.log("#### Have transceiver: ", media.mid, media.direction);
-            } else {
-                // Create a new remote transceiver which can receive
-                if(!media.direction) {
-                    media.direction = "recvonly";
-                }
-                logger.log("#### Create transceiver: ", media.mid, media.type, media.direction);
-                const newTransceiver = this.peerConn?.addTransceiver(media.type, { direction: media.direction });
-                if(newTransceiver) {
-                    logger.log("#### Add transceiver: ", newTransceiver.mid, newTransceiver.direction);
-                    this.remoteTransceivers.set(Number(media.mid), newTransceiver);
+            if (media.mid) {
+                media.mid = media.mid + 4;
+                const transceiver = transceivers.find((t) => t.mid === media.mid);
+                if (!transceiver) {
+                    this.peerConn?.addTransceiver(media.type, { direction: media.direction });
                 }
             }
         });
+        return {
+            sdp: writeSdp(sdp),
+            type: remoteSDP.type,
+            toJSON: remoteSDP.toJSON,
+        } as RTCSessionDescription;
     }
 
     private onTrack = (ev: RTCTrackEvent): void => {
@@ -3106,6 +3103,57 @@ export class MatrixCall extends TypedEventEmitter<CallEvent, CallEventHandlerMap
         pc.addEventListener("track", this.onTrack);
         pc.addEventListener("negotiationneeded", this.onNegotiationNeeded);
         pc.addEventListener("datachannel", this.onDataChannel);
+
+        if (this.isFocus) {
+            // If using the SFU we pre-init the transceiver for publishing tracks
+            // In this way we get the mid's of publishing transceivers.
+            this.transceivers.set(
+                getTransceiverKey(SDPStreamMetadataPurpose.Usermedia, "audio"),
+                pc.addTransceiver("audio"),
+            );
+            this.transceivers.set(
+                getTransceiverKey(SDPStreamMetadataPurpose.Usermedia, "video"),
+                pc.addTransceiver("video", {
+                    sendEncodings: getSimulcastEncodings(SDPStreamMetadataPurpose.Usermedia),
+                }),
+            );
+            this.transceivers.set(
+                getTransceiverKey(SDPStreamMetadataPurpose.Screenshare, "audio"),
+                pc.addTransceiver("audio"),
+            );
+            this.transceivers.set(
+                getTransceiverKey(SDPStreamMetadataPurpose.Screenshare, "video"),
+                pc.addTransceiver("video", {
+                    sendEncodings: getSimulcastEncodings(SDPStreamMetadataPurpose.Screenshare),
+                }),
+            );
+
+            if (isFirefox()) {
+                // Firefox does not support the sendEncodings
+                // parameter on addTransceiver(), so we use
+                // setParameters() to set them
+                const mediaTransceiver = this.transceivers.get(
+                    getTransceiverKey(SDPStreamMetadataPurpose.Usermedia, "video"),
+                );
+                if (mediaTransceiver) {
+                    let mediaParameters = mediaTransceiver?.sender.getParameters();
+                    mediaTransceiver?.sender.setParameters({
+                        ...mediaParameters,
+                        encodings: getSimulcastEncodings(SDPStreamMetadataPurpose.Screenshare),
+                    });
+                }
+                const screenShareTransceiver = this.transceivers.get(
+                    getTransceiverKey(SDPStreamMetadataPurpose.Screenshare, "video"),
+                );
+                if (screenShareTransceiver) {
+                    const screenShareParameters = screenShareTransceiver?.sender.getParameters();
+                    mediaTransceiver?.sender.setParameters({
+                        ...screenShareParameters,
+                        encodings: getSimulcastEncodings(SDPStreamMetadataPurpose.Screenshare),
+                    });
+                }
+            }
+        }
 
         return pc;
     }
