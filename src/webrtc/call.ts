@@ -924,7 +924,7 @@ export class MatrixCall extends TypedEventEmitter<CallEvent, CallEventHandlerMap
             // indefinitely (although presumably this would break if we tried to do
             // an ICE restart over to-device messages after you'd turned screen sharing
             // on & off too many times...)
-            if (sender && !this.isFocus) {
+            if (sender) {
                 try {
                     // We already have a sender, so we re-use it. We try to
                     // re-use transceivers as much as possible because they
@@ -948,7 +948,11 @@ export class MatrixCall extends TypedEventEmitter<CallEvent, CallEventHandlerMap
                     // Set the direction of the transceiver to indicate we're
                     // going to be sending. This may trigger re-negotiation, if
                     // we weren't sending until now
-                    transceiver.direction = transceiver.direction === "inactive" ? "sendonly" : "sendrecv";
+                    if (this.isFocus) {
+                        transceiver.direction = "sendonly";
+                    } else {
+                        transceiver.direction = transceiver.direction === "inactive" ? "sendonly" : "sendrecv";
+                    }
 
                     added = true;
                 } catch (error) {
