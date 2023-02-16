@@ -2926,6 +2926,10 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
         return canInvite;
     }
 
+    public canRemoveRoom(userId: string): boolean {
+        const me = this.getMember(userId)
+        return me?.powerLevel==100;
+    }
     /**
      * Returns the join rule based on the m.room.join_rule state event, defaulting to `invite`.
      * @returns the join_rule applied to this room
