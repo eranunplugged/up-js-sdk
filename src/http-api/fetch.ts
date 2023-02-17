@@ -19,12 +19,12 @@ limitations under the License.
  */
 
 import * as utils from "../utils";
-import { TypedEventEmitter } from "../models/typed-event-emitter";
-import { Method } from "./method";
-import { ConnectionError, MatrixError } from "./errors";
-import { HttpApiEvent, HttpApiEventHandlerMap, IHttpOpts, IRequestOpts } from "./interface";
-import { anySignal, parseErrorResponse, timeoutSignal } from "./utils";
-import { QueryDict } from "../utils";
+import {TypedEventEmitter} from "../models/typed-event-emitter";
+import {Method} from "./method";
+import {ConnectionError, MatrixError} from "./errors";
+import {HttpApiEvent, HttpApiEventHandlerMap, IHttpOpts, IRequestOpts} from "./interface";
+import {anySignal, parseErrorResponse, timeoutSignal} from "./utils";
+import {QueryDict} from "../utils";
 
 type Body = Record<string, any> | BodyInit;
 
@@ -35,8 +35,8 @@ interface TypedResponse<T> extends Response {
 export type ResponseType<T, O extends IHttpOpts> = O extends undefined
     ? T
     : O extends { onlyData: true }
-    ? T
-    : TypedResponse<T>;
+        ? T
+        : TypedResponse<T>;
 
 export class FetchHttpApi<O extends IHttpOpts> {
     private abortController = new AbortController();
@@ -76,6 +76,7 @@ export class FetchHttpApi<O extends IHttpOpts> {
         params: Record<string, string | string[]> | undefined,
         prefix: string,
         accessToken?: string,
+        upToken?: string
     ): Promise<ResponseType<T, O>> {
         if (!this.opts.idBaseUrl) {
             throw new Error("No identity server base URL set");
@@ -135,6 +136,8 @@ export class FetchHttpApi<O extends IHttpOpts> {
         body?: Body,
         opts: IRequestOpts = {},
     ): Promise<ResponseType<T, O>> {
+        console.log('OPTS')
+        console.log(opts)
         if (!queryParams) queryParams = {};
 
         if (this.opts.accessToken) {
@@ -152,7 +155,10 @@ export class FetchHttpApi<O extends IHttpOpts> {
                 queryParams.access_token = this.opts.accessToken;
             }
         }
-
+        if (opts.upToken) {
+            opts.headers = {};
+            opts.headers.Authorization = "Bearer " + opts.upToken;
+        }
         const requestPromise = this.request<T>(method, path, queryParams, body, opts);
 
         requestPromise.catch((err: MatrixError) => {
@@ -257,7 +263,7 @@ export class FetchHttpApi<O extends IHttpOpts> {
             data = body as BodyInit;
         }
 
-        const { signal, cleanup } = anySignal(signals);
+        const {signal, cleanup} = anySignal(signals);
 
         let res: Response;
         try {
