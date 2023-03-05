@@ -65,7 +65,7 @@ import { IStateEventWithRoomId } from "../@types/search";
 import { RelationsContainer } from "./relations-container";
 import { ReadReceipt, synthesizeReceipt } from "./read-receipt";
 import { Feature, ServerSupport } from "../feature";
-
+import dis from "matrix-react-sdk/src/dispatcher/dispatcher"
 // These constants are used as sane defaults when the homeserver doesn't support
 // the m.room_versions capability. In practice, KNOWN_SAFE_ROOM_VERSION should be
 // the same as the common default room version whereas SAFE_ROOM_VERSIONS are the
@@ -869,6 +869,7 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
         if (prevMembership !== membership) {
             if (membership === "leave") {
                 this.cleanupAfterLeaving();
+                dis.dispatch({action: "view_home_page"})
             }
             this.emit(RoomEvent.MyMembership, this, membership, prevMembership);
         }
