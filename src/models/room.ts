@@ -64,6 +64,8 @@ import {
 import { IStateEventWithRoomId } from "../@types/search";
 import { RelationsContainer } from "./relations-container";
 import { ReadReceipt, synthesizeReceipt } from "./read-receipt";
+import { Feature, ServerSupport } from "../feature";
+import dis from "matrix-react-sdk/src/dispatcher/dispatcher"
 import { Poll, PollEvent } from "./poll";
 
 // These constants are used as sane defaults when the homeserver doesn't support
@@ -877,6 +879,7 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
         if (prevMembership !== membership) {
             if (membership === "leave") {
                 this.cleanupAfterLeaving();
+                dis.dispatch({action: "view_home_page"})
             }
             this.emit(RoomEvent.MyMembership, this, membership, prevMembership);
         }
@@ -2960,6 +2963,10 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
         return canInvite;
     }
 
+    public canRemoveRoom(userId: string): boolean {
+        const me = this.getMember(userId)
+        return me?.powerLevel==100;
+    }
     /**
      * Returns the join rule based on the m.room.join_rule state event, defaulting to `invite`.
      * @returns the join_rule applied to this room

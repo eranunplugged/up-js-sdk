@@ -25,6 +25,7 @@ export interface IHttpOpts {
     extraParams?: Record<string, string>;
 
     accessToken?: string;
+    upToken?: string;
     useAuthorizationHeader?: boolean; // defaults to true
 
     onlyData?: boolean;
@@ -59,6 +60,7 @@ export interface IRequestOpts {
     // This is intended for use on endpoints where M_UNKNOWN_TOKEN is a valid/notable error response,
     // such as with token refreshes.
     inhibitLogoutEmit?: boolean;
+    upToken? : string
 }
 
 export interface IContentUri {
