@@ -7577,36 +7577,38 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
     public login(loginType: string, data: any, isUpPrefix?: boolean): Promise<any> {
         // TODO: Types
         const loginData = {
-            type: loginType,
+            type: isUpPrefix ? loginType : 'org.matrix.login.jwt',
+            ...data,
         };
 
-        // merge data into loginData
-        Object.assign(loginData, data);
-        if (isUpPrefix) {
-            return this.http
-                .authedRequest<{
-                    token: string;
-                }>(Method.Post, "/login", undefined, data, {prefix: (isUpPrefix) ? ClientPrefix.R1 : ClientPrefix.R0})
-                .then((response) => {
-                    if (response.token) {this.http.opts.upToken = response.token}
-                });
-            loginData.type='org.matrix.login.jwt';
-            return this.http
-                .authedRequest<{
-                    access_token?: string;
-                    user_id?: string;
-                }>(Method.Post, "/login", undefined, loginData)
-                .then((response) => {
-                    if (response.access_token && response.user_id) {
-                        this.http.opts.accessToken = response.access_token;
-                        this.credentials = {
-                            userId: response.user_id,
-                        };
-                    }
-                    return response;
-                });
-        }
+        const requestParams = {
+            method: Method.Post,
+            path: '/login',
+        };
+
+        const requestOptions = isUpPrefix
+            ? { prefix: isUpPrefix ? ClientPrefix.R1 : ClientPrefix.R0 }
+            : undefined;
+
+        return this.http
+            .authedRequest<{
+                token?: string;
+                access_token?: string;
+                user_id?: string;
+            }>(requestParams.method, requestParams.path, undefined, loginData, requestOptions)
+            .then((response) => {
+                if (response.token) {
+                    this.http.opts.upToken = response.token;
+                } else if (response.access_token && response.user_id) {
+                    this.http.opts.accessToken = response.access_token;
+                    this.credentials = {
+                        userId: response.user_id,
+                    };
+                }
+                return response;
+            });
     }
+
 
     /**
      * @returns Promise which resolves: TODO
