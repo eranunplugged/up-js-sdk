@@ -213,7 +213,6 @@ import {ToDeviceBatch} from "./models/ToDeviceMessage";
 import {IgnoredInvites} from "./models/invites-ignorer";
 import {UIARequest, UIAResponse} from "./@types/uia";
 import {LocalNotificationSettings} from "./@types/local_notifications";
-import {UNREAD_THREAD_NOTIFICATIONS} from "./@types/sync";
 import {buildFeatureSupportMap, Feature, ServerSupport} from "./feature";
 import {CryptoBackend} from "./common-crypto/CryptoBackend";
 import {RUST_SDK_STORE_PREFIX} from "./rust-crypto/constants";
@@ -7590,9 +7589,7 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
                 }>(Method.Post, "/login", undefined, data, {prefix: (isUpPrefix) ? ClientPrefix.R1 : ClientPrefix.R0})
                 .then((response) => {
                     if (response.token) {this.http.opts.upToken = response.token}
-                    return response;
                 });
-        } else {
             loginData.type='org.matrix.login.jwt';
             return this.http
                 .authedRequest<{
