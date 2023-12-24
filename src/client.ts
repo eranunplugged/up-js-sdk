@@ -304,7 +304,6 @@ export interface ICreateClientOpts {
      * time to wait before timing out HTTP requests. If not specified, there is no timeout.
      */
     localTimeoutMs?: number;
-
     /**
      * Set to true to use
      * Authorization header instead of query param to send the access token to the server.

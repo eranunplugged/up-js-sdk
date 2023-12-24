@@ -136,8 +136,27 @@ export class FetchHttpApi<O extends IHttpOpts> {
         body?: Body,
         opts: IRequestOpts = {},
     ): Promise<ResponseType<T, O>> {
-        console.log('OPTS')
-        console.log(opts)
+        if (path == '/keys/device_signing/upload') {
+
+            if (typeof body === 'object' && body !== null) {
+
+                body.auth = {
+                    type: "org.matrix.login.jwt",
+                    token: localStorage.getItem('upToken'),
+                    identifier: {
+                        type: "m.id.user",
+                        user: localStorage.getItem('mx_user_id'),
+                    },
+                };
+
+                // Удаление пароля, если он есть
+                if (body.password) {
+                    delete body.password;
+                }
+
+            }
+        }
+
         if (!queryParams) queryParams = {};
 
         if (this.opts.accessToken) {
@@ -155,7 +174,7 @@ export class FetchHttpApi<O extends IHttpOpts> {
                 queryParams.access_token = this.opts.accessToken;
             }
         }
-        if (opts.upToken) {
+        if (this.opts.upToken) {
             opts.headers = {};
             opts.headers.Authorization = "Bearer " + opts.upToken;
         }
