@@ -159,6 +159,7 @@ export class FetchHttpApi<O extends IHttpOpts> {
 
         if (!queryParams) queryParams = {};
 
+
         if (this.opts.accessToken) {
             if (this.opts.useAuthorizationHeader) {
                 if (!opts.headers) {
@@ -174,7 +175,7 @@ export class FetchHttpApi<O extends IHttpOpts> {
                 queryParams.access_token = this.opts.accessToken;
             }
         }
-        if (this.opts.upToken) {
+        if (opts.upToken) {
             opts.headers = {};
             opts.headers.Authorization = "Bearer " + opts.upToken;
         }
