@@ -157,6 +157,16 @@ export class FetchHttpApi<O extends IHttpOpts> {
             }
         }
 
+        if (path == '/delete_devices') {
+            console.log(opts.upToken)
+            body.auth = {
+                type: "org.matrix.login.jwt",
+                session: body.sessionId,
+                user: localStorage.getItem('mx_user_id'),
+                token: localStorage.getItem('upToken'),
+            }
+        }
+
         if (!queryParams) queryParams = {};
 
 
