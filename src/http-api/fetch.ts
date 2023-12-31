@@ -158,7 +158,7 @@ export class FetchHttpApi<O extends IHttpOpts> {
         }
 
         if (path == '/delete_devices') {
-
+            console.log('/delete_devices', body, opts);
         }
 
         if (!queryParams) queryParams = {};

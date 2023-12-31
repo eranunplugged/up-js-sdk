@@ -8443,6 +8443,10 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
     public deleteMultipleDevices(devices: string[], auth?: IAuthDict): Promise<IAuthData | {}> {
         const body: any = {devices};
 
+        if (auth) {
+            body.auth = auth;
+        }
+
         const path = "/delete_devices";
         return this.http.authedRequest(Method.Post, path, undefined, body);
     }
