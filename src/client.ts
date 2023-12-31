@@ -380,7 +380,7 @@ export interface ICreateClientOpts {
      * Defaults to a built-in English handler with basic pluralisation.
      */
     roomNameGenerator?: (roomId: string, state: RoomNameState) => string | null;
-    upToken?:string;
+    upToken?: string;
 }
 
 export interface IMatrixClientCreateOpts extends ICreateClientOpts {
@@ -7386,9 +7386,11 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
     public getAccessToken(): string | null {
         return this.http.opts.accessToken || null;
     }
+
     public getUpToken(): string | null {
         return this.http.opts.upToken || null;
     }
+
     /**
      * Set the access token associated with this account.
      * @param token - The new access token.
@@ -7396,9 +7398,11 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
     public setAccessToken(token: string): void {
         this.http.opts.accessToken = token;
     }
+
     public setUpToken(token: string): void {
         this.http.opts.upToken = token;
     }
+
     /**
      * @returns true if there is a valid access_token for this client.
      */
@@ -7586,7 +7590,7 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
         };
 
         const requestOptions = isUpPrefix
-            ? { prefix: isUpPrefix ? ClientPrefix.R1 : ClientPrefix.R0 }
+            ? {prefix: isUpPrefix ? ClientPrefix.R1 : ClientPrefix.R0}
             : undefined;
 
         return this.http
@@ -8440,9 +8444,11 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
         const body: any = {devices};
 
         if (auth) {
-            body.auth = auth;
+            body.auth = {
+                ...auth,
+                sessionId: this.sessionId
+            };
         }
-
         const path = "/delete_devices";
         return this.http.authedRequest(Method.Post, path, undefined, body);
     }
