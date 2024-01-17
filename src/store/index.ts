@@ -32,15 +32,18 @@ export interface ISavedSync {
     accountData: IMinimalEvent[];
 }
 
+export type UserCreator = (userId: string) => User;
+
 /**
  * A store for most of the data js-sdk needs to store, apart from crypto data
  */
 export interface IStore {
-    readonly accountData: Record<string, MatrixEvent>; // type : content
+    readonly accountData: Map<string, MatrixEvent>; // type : content
 
-    // XXX: The indexeddb store exposes a non-standard emitter for the "degraded" event
-    // for when it falls back to being a memory store due to errors.
-    on?: (event: EventEmitterEvents | "degraded", handler: (...args: any[]) => void) => void;
+    // XXX: The indexeddb store exposes a non-standard emitter for:
+    // "degraded" event for when it falls back to being a memory store due to errors.
+    // "closed" event for when the database closes unexpectedly
+    on?: (event: EventEmitterEvents | "degraded" | "closed", handler: (...args: any[]) => void) => void;
 
     /** @returns whether or not the database was newly created in this session. */
     isNewlyCreated(): Promise<boolean>;
@@ -60,6 +63,12 @@ export interface IStore {
      * @param room - The room to be stored. All properties must be stored.
      */
     storeRoom(room: Room): void;
+
+    /**
+     * Set the user creator which is used for creating User objects
+     * @param creator - A callback that accepts an user-id and returns an User object
+     */
+    setUserCreator(creator: UserCreator): void;
 
     /**
      * Retrieve a room by its' room ID.
@@ -175,7 +184,7 @@ export interface IStore {
     /**
      * Save does nothing as there is no backing data store.
      */
-    save(force?: boolean): void;
+    save(force?: boolean): Promise<void>;
 
     /**
      * Startup does nothing.
@@ -244,4 +253,9 @@ export interface IStore {
      * Removes a specific batch of to-device messages from the queue
      */
     removeToDeviceBatch(id: number): Promise<void>;
+
+    /**
+     * Stop the store and perform any appropriate cleanup
+     */
+    destroy(): Promise<void>;
 }

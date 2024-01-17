@@ -6,9 +6,19 @@ import "../olm-loader";
 
 import { logger } from "../../src/logger";
 import { IContent, IEvent, IEventRelation, IUnsigned, MatrixEvent, MatrixEventEvent } from "../../src/models/event";
-import { ClientEvent, EventType, IPusher, MatrixClient, MsgType } from "../../src";
+import {
+    ClientEvent,
+    EventType,
+    IJoinedRoom,
+    IPusher,
+    ISyncResponse,
+    MatrixClient,
+    MsgType,
+    RelationType,
+} from "../../src";
 import { SyncState } from "../../src/sync";
 import { eventMapperFor } from "../../src/event-mapper";
+import { TEST_ROOM_ID } from "./test-data";
 
 /**
  * Return a promise that is resolved when the client next emits a
@@ -37,6 +47,62 @@ export function syncPromise(client: MatrixClient, count = 1): Promise<void> {
     return p.then(() => {
         return syncPromise(client, count - 1);
     });
+}
+
+/**
+ * Return a sync response which contains a single room (by default TEST_ROOM_ID), with the members given
+ * @param roomMembers
+ * @param roomId
+ *
+ * @returns the sync response
+ */
+export function getSyncResponse(roomMembers: string[], roomId = TEST_ROOM_ID): ISyncResponse {
+    const roomResponse: IJoinedRoom = {
+        summary: {
+            "m.heroes": [],
+            "m.joined_member_count": roomMembers.length,
+            "m.invited_member_count": roomMembers.length,
+        },
+        state: {
+            events: [
+                mkEventCustom({
+                    sender: roomMembers[0],
+                    type: "m.room.encryption",
+                    state_key: "",
+                    content: {
+                        algorithm: "m.megolm.v1.aes-sha2",
+                    },
+                }),
+            ],
+        },
+        timeline: {
+            events: [],
+            prev_batch: "",
+        },
+        ephemeral: { events: [] },
+        account_data: { events: [] },
+        unread_notifications: {},
+    };
+
+    for (let i = 0; i < roomMembers.length; i++) {
+        roomResponse.state.events.push(
+            mkMembershipCustom({
+                membership: "join",
+                sender: roomMembers[i],
+            }),
+        );
+    }
+
+    return {
+        next_batch: "1",
+        rooms: {
+            join: { [roomId]: roomResponse },
+            invite: {},
+            leave: {},
+            knock: {},
+        },
+        account_data: { events: [] },
+    };
 }
 
 /**
@@ -249,6 +315,7 @@ export interface IMessageOpts {
     event?: boolean;
     relatesTo?: IEventRelation;
     ts?: number;
+    unsigned?: IUnsigned;
 }
 
 /**
@@ -257,6 +324,9 @@ export interface IMessageOpts {
  * @param opts.room - The room ID for the event.
  * @param opts.user - The user ID for the event.
  * @param opts.msg - Optional. The content.body for the event.
+ * @param opts.event - True to make a MatrixEvent.
+ * @param opts.relatesTo - An IEventRelation relating this to another event.
+ * @param opts.ts - The timestamp of the event.
  * @param opts.event - True to make a MatrixEvent.
  * @param client - If passed along with opts.event=true will be used to set up re-emitters.
  * @returns The event
@@ -297,6 +367,7 @@ interface IReplyMessageOpts extends IMessageOpts {
  * @param opts.room - The room ID for the event.
  * @param opts.user - The user ID for the event.
  * @param opts.msg - Optional. The content.body for the event.
+ * @param opts.ts - The timestamp of the event.
  * @param opts.replyToMessage - The replied message
  * @param opts.event - True to make a MatrixEvent.
  * @param client - If passed along with opts.event=true will be used to set up re-emitters.
@@ -328,6 +399,73 @@ export function mkReplyMessage(
         eventOpts.content.body = "Random->" + Math.random();
     }
     return mkEvent(eventOpts, client);
+}
+
+/**
+ * Create a reaction event.
+ *
+ * @param target - the event we are reacting to.
+ * @param client - the MatrixClient
+ * @param userId - the userId of the sender
+ * @param roomId - the id of the room we are in
+ * @param ts - The timestamp of the event.
+ * @returns The event
+ */
+export function mkReaction(
+    target: MatrixEvent,
+    client: MatrixClient,
+    userId: string,
+    roomId: string,
+    ts?: number,
+): MatrixEvent {
+    return mkEvent(
+        {
+            event: true,
+            type: EventType.Reaction,
+            user: userId,
+            room: roomId,
+            content: {
+                "m.relates_to": {
+                    rel_type: RelationType.Annotation,
+                    event_id: target.getId()!,
+                    key: Math.random().toString(),
+                },
+            },
+            ts,
+        },
+        client,
+    );
+}
+
+export function mkEdit(
+    target: MatrixEvent,
+    client: MatrixClient,
+    userId: string,
+    roomId: string,
+    msg?: string,
+    ts?: number,
+) {
+    msg = msg ?? `Edit of ${target.getId()}`;
+    return mkEvent(
+        {
+            event: true,
+            type: EventType.RoomMessage,
+            user: userId,
+            room: roomId,
+            content: {
+                "body": `* ${msg}`,
+                "m.new_content": {
+                    body: msg,
+                },
+                "m.relates_to": {
+                    rel_type: RelationType.Replace,
+                    event_id: target.getId()!,
+                },
+            },
+            ts,
+        },
+        client,
+    );
 }
 
 /**
@@ -375,23 +513,30 @@ export async function awaitDecryption(
     // already
     if (event.getClearContent() !== null) {
         if (waitOnDecryptionFailure && event.isDecryptionFailure()) {
-            logger.log(`${Date.now()} event ${event.getId()} got decryption error; waiting`);
+            logger.log(`${Date.now()}: event ${event.getId()} got decryption error; waiting`);
         } else {
             return event;
         }
     } else {
-        logger.log(`${Date.now()} event ${event.getId()} is not yet decrypted; waiting`);
+        logger.log(`${Date.now()}: event ${event.getId()} is not yet decrypted; waiting`);
     }
 
     return new Promise((resolve) => {
-        event.once(MatrixEventEvent.Decrypted, (ev) => {
-            logger.log(`${Date.now()} event ${event.getId()} now decrypted`);
-            resolve(ev);
-        });
+        if (waitOnDecryptionFailure) {
+            event.on(MatrixEventEvent.Decrypted, (ev, err) => {
+                logger.log(`${Date.now()}: MatrixEventEvent.Decrypted for event ${event.getId()}: ${err ?? "success"}`);
+                if (!err) {
+                    resolve(ev);
+                }
+            });
+        } else {
+            event.once(MatrixEventEvent.Decrypted, (ev, err) => {
+                logger.log(`${Date.now()}: MatrixEventEvent.Decrypted for event ${event.getId()}: ${err ?? "success"}`);
+                resolve(ev);
+            });
+        }
     });
 }
-
-export const emitPromise = (e: EventEmitter, k: string): Promise<any> => new Promise((r) => e.once(k, r));
 
 export const mkPusher = (extra: Partial<IPusher> = {}): IPusher => ({
     app_display_name: "app",
@@ -414,4 +559,26 @@ export type InitCrypto = (_: MatrixClient) => Promise<void>;
 CRYPTO_BACKENDS["rust-sdk"] = (client: MatrixClient) => client.initRustCrypto();
 if (global.Olm) {
     CRYPTO_BACKENDS["libolm"] = (client: MatrixClient) => client.initCrypto();
+}
+
+export const emitPromise = (e: EventEmitter, k: string): Promise<any> => new Promise((r) => e.once(k, r));
+
+/**
+ * Advance the fake timers in a loop until the given promise resolves or rejects.
+ *
+ * Returns the result of the promise.
+ *
+ * This can be useful when there are multiple steps in the code which require an iteration of the event loop.
+ */
+export async function advanceTimersUntil<T>(promise: Promise<T>): Promise<T> {
+    let resolved = false;
+    promise.finally(() => {
+        resolved = true;
+    });
+
+    while (!resolved) {
+        await jest.advanceTimersByTimeAsync(1);
+    }
+
+    return await promise;
 }

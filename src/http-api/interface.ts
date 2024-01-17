@@ -15,7 +15,26 @@ limitations under the License.
 */
 
 import { MatrixError } from "./errors";
+import { Logger } from "../logger";
 
+export type Body = Record<string, any> | BodyInit;
+
+/**
+ * @experimental
+ * Unencrypted access and (optional) refresh token
+ */
+export type AccessTokens = {
+    accessToken: string;
+    refreshToken?: string;
+};
+/**
+ * @experimental
+ * Function that performs token refresh using the given refreshToken.
+ * Returns a promise that resolves to the refreshed access and (optional) refresh tokens.
+ *
+ * Can be passed to HttpApi instance as {@link IHttpOpts.tokenRefreshFunction} during client creation {@link ICreateClientOpts}
+ */
+export type TokenRefreshFunction = (refreshToken: string) => Promise<AccessTokens>;
 export interface IHttpOpts {
     fetchFn?: typeof global.fetch;
 
@@ -26,13 +45,25 @@ export interface IHttpOpts {
 
     accessToken?: string;
     upToken?: string;
+    /**
+     * Used in conjunction with tokenRefreshFunction to attempt token refresh
+     */
+    refreshToken?: string;
+    /**
+     * Function to attempt token refresh when a possibly expired token is encountered
+     * Optional, only called when a refreshToken is present
+     */
+    tokenRefreshFunction?: TokenRefreshFunction;
     useAuthorizationHeader?: boolean; // defaults to true
 
     onlyData?: boolean;
     localTimeoutMs?: number;
+
+    /** Optional logger instance. If provided, requests and responses will be logged. */
+    logger?: Logger;
 }
 
-export interface IRequestOpts {
+export interface IRequestOpts extends Pick<RequestInit, "priority"> {
     /**
      * The alternative base url to use.
      * If not specified, uses this.opts.baseUrl

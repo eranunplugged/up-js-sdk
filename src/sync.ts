@@ -26,13 +26,11 @@ limitations under the License.
 import { Optional } from "matrix-events-sdk";
 
 import type { SyncCryptoCallbacks } from "./common-crypto/CryptoBackend";
-import { User, UserEvent } from "./models/user";
+import { User } from "./models/user";
 import { NotificationCountType, Room, RoomEvent } from "./models/room";
-import * as utils from "./utils";
-import { IDeferred } from "./utils";
+import { deepCopy, defer, IDeferred, noUnsafeEventProps, promiseMapSeries, unsafeProp } from "./utils";
 import { Filter } from "./filter";
 import { EventTimeline } from "./models/event-timeline";
-import { PushProcessor } from "./pushprocessor";
 import { logger } from "./logger";
 import { InvalidStoreError, InvalidStoreState } from "./errors";
 import { ClientEvent, IStoredClientOpts, MatrixClient, PendingEventOrdering, ResetTimelineCallback } from "./client";
@@ -42,6 +40,7 @@ import {
     IInviteState,
     IJoinedRoom,
     ILeftRoom,
+    IKnockedRoom,
     IMinimalEvent,
     IRoomEvent,
     IStateEvent,
@@ -169,7 +168,7 @@ export interface ISyncStateData {
     fromCache?: boolean;
 }
 
-enum SetPresence {
+export enum SetPresence {
     Offline = "offline",
     Online = "online",
     Unavailable = "unavailable",
@@ -226,6 +225,7 @@ export class SyncApi {
     private notifEvents: MatrixEvent[] = []; // accumulator of sync events in the current sync response
     private failedSyncCount = 0; // Number of consecutive failed /sync requests
     private storeIsInvalid = false; // flag set if the store needs to be cleared before we can start
+    private presence?: SetPresence;
 
     /**
      * Construct an entity which is able to sync with a homeserver.
@@ -408,6 +408,10 @@ export class SyncApi {
         const client = this.client;
         this._peekRoom = this.createRoom(roomId);
         return this.client.roomInitialSync(roomId, 20).then((response) => {
+            if (this._peekRoom?.roomId !== roomId) {
+                throw new Error("Peeking aborted");
+            }
+
             // make sure things are init'd
             response.messages = response.messages || { chunk: [] };
             response.messages.chunk = response.messages.chunk || [];
@@ -415,7 +419,7 @@ export class SyncApi {
 
             // FIXME: Mostly duplicated from injectRoomEvents but not entirely
             // because "state" in this API is at the BEGINNING of the chunk
-            const oldStateEvents = utils.deepCopy(response.state).map(client.getEventMapper());
+            const oldStateEvents = deepCopy(response.state).map(client.getEventMapper());
             const stateEvents = response.state.map(client.getEventMapper());
             const messages = response.messages.chunk.map(client.getEventMapper());
 
@@ -427,7 +431,7 @@ export class SyncApi {
                     if (user) {
                         user.setPresenceEvent(presenceEvent);
                     } else {
-                        user = createNewUser(client, presenceEvent.getContent().user_id);
+                        user = User.createUser(presenceEvent.getContent().user_id, client);
                         user.setPresenceEvent(presenceEvent);
                         client.store.storeUser(user);
                     }
@@ -439,31 +443,31 @@ export class SyncApi {
             // fire off pagination requests in response to the Room.timeline
             // events.
             if (response.messages.start) {
-                this._peekRoom!.oldState.paginationToken = response.messages.start;
+                this._peekRoom.oldState.paginationToken = response.messages.start;
             }
 
             // set the state of the room to as it was after the timeline executes
-            this._peekRoom!.oldState.setStateEvents(oldStateEvents);
-            this._peekRoom!.currentState.setStateEvents(stateEvents);
+            this._peekRoom.oldState.setStateEvents(oldStateEvents);
+            this._peekRoom.currentState.setStateEvents(stateEvents);
 
-            this.resolveInvites(this._peekRoom!);
-            this._peekRoom!.recalculate();
+            this.resolveInvites(this._peekRoom);
+            this._peekRoom.recalculate();
 
             // roll backwards to diverge old state. addEventsToTimeline
             // will overwrite the pagination token, so make sure it overwrites
             // it with the right thing.
-            this._peekRoom!.addEventsToTimeline(
+            this._peekRoom.addEventsToTimeline(
                 messages.reverse(),
                 true,
-                this._peekRoom!.getLiveTimeline(),
+                this._peekRoom.getLiveTimeline(),
                 response.messages.start,
             );
 
-            client.store.storeRoom(this._peekRoom!);
-            client.emit(ClientEvent.Room, this._peekRoom!);
+            client.store.storeRoom(this._peekRoom);
+            client.emit(ClientEvent.Room, this._peekRoom);
 
-            this.peekPoll(this._peekRoom!);
-            return this._peekRoom!;
+            this.peekPoll(this._peekRoom);
+            return this._peekRoom;
         });
     }
 
@@ -502,7 +506,7 @@ export class SyncApi {
                 },
             )
             .then(
-                (res) => {
+                async (res) => {
                     if (this._peekRoom !== peekRoom) {
                         debuglog("Stopped peeking in room %s", peekRoom.roomId);
                         return;
@@ -526,7 +530,7 @@ export class SyncApi {
                             if (user) {
                                 user.setPresenceEvent(presenceEvent);
                             } else {
-                                user = createNewUser(this.client, presenceEvent.getContent().user_id);
+                                user = User.createUser(presenceEvent.getContent().user_id, this.client);
                                 user.setPresenceEvent(presenceEvent);
                                 this.client.store.storeUser(user);
                             }
@@ -542,7 +546,7 @@ export class SyncApi {
                         })
                         .map(this.client.getEventMapper());
 
-                    peekRoom.addLiveEvents(events);
+                    await peekRoom.addLiveEvents(events);
                     this.peekPoll(peekRoom, res.end);
                 },
                 (err) => {
@@ -646,18 +650,11 @@ export class SyncApi {
             this.opts.lazyLoadMembers = false;
         }
         if (this.opts.lazyLoadMembers) {
-            debuglog("Checking server lazy load support...");
-            const supported = await this.client.doesServerSupportLazyLoading();
-            if (supported) {
-                debuglog("Enabling lazy load on sync filter...");
-                if (!this.opts.filter) {
-                    this.opts.filter = this.buildDefaultFilter();
-                }
-                this.opts.filter.setLazyLoadMembers(true);
-            } else {
-                debuglog("LL: lazy loading requested but not supported " + "by server, so disabling");
-                this.opts.lazyLoadMembers = false;
+            debuglog("Enabling lazy load on sync filter...");
+            if (!this.opts.filter) {
+                this.opts.filter = this.buildDefaultFilter();
             }
+            this.opts.filter.setLazyLoadMembers(true);
         }
         // need to vape the store when enabling LL and wasn't enabled before
         debuglog("Checking whether lazy loading has changed in store...");
@@ -900,8 +897,6 @@ export class SyncApi {
             // Reset after a successful sync
             this.failedSyncCount = 0;
 
-            await this.client.store.setSyncData(data);
-
             const syncEventData = {
                 oldSyncToken: syncToken ?? undefined,
                 nextSyncToken: data.next_batch,
@@ -924,6 +919,10 @@ export class SyncApi {
                 // Emit the exception for client handling
                 this.client.emit(ClientEvent.SyncUnexpectedError, <Error>e);
             }
+
+            // Persist after processing as `unsigned` may get mutated
+            // with an `org.matrix.msc4023.thread_id`
+            await this.client.store.setSyncData(data);
 
             // update this as it may have changed
             syncEventData.catchingUp = this.catchingUp;
@@ -954,7 +953,7 @@ export class SyncApi {
                 }
 
                 // tell databases that everything is now in a consistent state and can be saved.
-                this.client.store.save();
+                await this.client.store.save();
             }
         }
 
@@ -1004,6 +1003,8 @@ export class SyncApi {
 
         if (this.opts.disablePresence) {
             qps.set_presence = SetPresence.Offline;
+        } else if (this.presence !== undefined) {
+            qps.set_presence = this.presence;
         }
 
         if (syncToken) {
@@ -1024,6 +1025,14 @@ export class SyncApi {
         }
 
         return qps;
+    }
+
+    /**
+     * Specify the set_presence value to be used for subsequent calls to the Sync API.
+     * @param presence - the presence to specify to set_presence of sync calls
+     */
+    public setPresence(presence?: SetPresence): void {
+        this.presence = presence;
     }
 
     private async onSyncError(err: MatrixError): Promise<boolean> {
@@ -1134,22 +1143,24 @@ export class SyncApi {
 
         // handle presence events (User objects)
         if (Array.isArray(data.presence?.events)) {
-            data.presence!.events.map(client.getEventMapper()).forEach(function (presenceEvent) {
-                let user = client.store.getUser(presenceEvent.getSender()!);
-                if (user) {
-                    user.setPresenceEvent(presenceEvent);
-                } else {
-                    user = createNewUser(client, presenceEvent.getSender()!);
-                    user.setPresenceEvent(presenceEvent);
-                    client.store.storeUser(user);
-                }
-                client.emit(ClientEvent.Event, presenceEvent);
-            });
+            data.presence!.events.filter(noUnsafeEventProps)
+                .map(client.getEventMapper())
+                .forEach(function (presenceEvent) {
+                    let user = client.store.getUser(presenceEvent.getSender()!);
+                    if (user) {
+                        user.setPresenceEvent(presenceEvent);
+                    } else {
+                        user = User.createUser(presenceEvent.getSender()!, client);
+                        user.setPresenceEvent(presenceEvent);
+                        client.store.storeUser(user);
+                    }
+                    client.emit(ClientEvent.Event, presenceEvent);
+                });
         }
 
         // handle non-room account_data
         if (Array.isArray(data.account_data?.events)) {
-            const events = data.account_data.events.map(client.getEventMapper());
+            const events = data.account_data.events.filter(noUnsafeEventProps).map(client.getEventMapper());
             const prevEventsMap = events.reduce<Record<string, MatrixEvent | undefined>>((m, c) => {
                 m[c.getType()!] = client.store.getAccountData(c.getType());
                 return m;
@@ -1162,7 +1173,7 @@ export class SyncApi {
                 // (see sync) before syncing over the network.
                 if (accountDataEvent.getType() === EventType.PushRules) {
                     const rules = accountDataEvent.getContent<IPushRules>();
-                    client.pushRules = PushProcessor.rewriteDefaultRules(rules);
+                    client.setPushRules(rules);
                 }
                 const prevEvent = prevEventsMap[accountDataEvent.getType()!];
                 client.emit(ClientEvent.AccountData, accountDataEvent, prevEvent);
@@ -1172,7 +1183,7 @@ export class SyncApi {
 
         // handle to-device events
         if (data.to_device && Array.isArray(data.to_device.events) && data.to_device.events.length > 0) {
-            let toDeviceMessages: IToDeviceEvent[] = data.to_device.events;
+            let toDeviceMessages: IToDeviceEvent[] = data.to_device.events.filter(noUnsafeEventProps);
 
             if (this.syncOpts.cryptoCallbacks) {
                 toDeviceMessages = await this.syncOpts.cryptoCallbacks.preprocessToDeviceMessages(toDeviceMessages);
@@ -1230,6 +1241,7 @@ export class SyncApi {
         let inviteRooms: WrappedRoom<IInvitedRoom>[] = [];
         let joinRooms: WrappedRoom<IJoinedRoom>[] = [];
         let leaveRooms: WrappedRoom<ILeftRoom>[] = [];
+        let knockRooms: WrappedRoom<IKnockedRoom>[] = [];
 
         if (data.rooms) {
             if (data.rooms.invite) {
@@ -1241,12 +1253,15 @@ export class SyncApi {
             if (data.rooms.leave) {
                 leaveRooms = this.mapSyncResponseToRoomArray(data.rooms.leave);
             }
+            if (data.rooms.knock) {
+                knockRooms = this.mapSyncResponseToRoomArray(data.rooms.knock);
+            }
         }
 
         this.notifEvents = [];
 
         // Handle invites
-        await utils.promiseMapSeries(inviteRooms, async (inviteObj) => {
+        await promiseMapSeries(inviteRooms, async (inviteObj) => {
             const room = inviteObj.room;
             const stateEvents = this.mapSyncEventsFormat(inviteObj.invite_state, room);
 
@@ -1287,7 +1302,7 @@ export class SyncApi {
         });
 
         // Handle joins
-        await utils.promiseMapSeries(joinRooms, async (joinObj) => {
+        await promiseMapSeries(joinRooms, async (joinObj) => {
             const room = joinObj.room;
             const stateEvents = this.mapSyncEventsFormat(joinObj.state, room);
             // Prevent events from being decrypted ahead of time
@@ -1298,19 +1313,33 @@ export class SyncApi {
             const ephemeralEvents = this.mapSyncEventsFormat(joinObj.ephemeral);
             const accountDataEvents = this.mapSyncEventsFormat(joinObj.account_data);
 
-            const encrypted = client.isRoomEncrypted(room.roomId);
-            // we do this first so it's correct when any of the events fire
+            const encrypted = this.isRoomEncrypted(room, stateEvents, events);
+            // We store the server-provided value first so it's correct when any of the events fire.
             if (joinObj.unread_notifications) {
-                room.setUnreadNotificationCount(
-                    NotificationCountType.Total,
-                    joinObj.unread_notifications.notification_count ?? 0,
-                );
+                /**
+                 * We track unread notifications ourselves in encrypted rooms, so don't
+                 * bother setting it here. We trust our calculations better than the
+                 * server's for this case, and therefore will assume that our non-zero
+                 * count is accurate.
+                 * XXX: this is known faulty as the push rule for `.m.room.encrypted` may be disabled so server
+                 * may issue notification counts of 0 which we wrongly trust.
+                 * https://github.com/matrix-org/matrix-spec-proposals/pull/2654 would fix this
+                 *
+                 * @see import("./client").fixNotificationCountOnDecryption
+                 */
+                if (!encrypted || joinObj.unread_notifications.notification_count === 0) {
+                    // In an encrypted room, if the room has notifications enabled then it's typical for
+                    // the server to flag all new messages as notifying. However, some push rules calculate
+                    // events as ignored based on their event contents (e.g. ignoring msgtype=m.notice messages)
+                    // so we want to calculate this figure on the client in all cases.
+                    room.setUnreadNotificationCount(
+                        NotificationCountType.Total,
+                        joinObj.unread_notifications.notification_count ?? 0,
+                    );
+                }
 
-                // We track unread notifications ourselves in encrypted rooms, so don't
-                // bother setting it here. We trust our calculations better than the
-                // server's for this case, and therefore will assume that our non-zero
-                // count is accurate.
                 if (!encrypted || room.getUnreadNotificationCount(NotificationCountType.Highlight) <= 0) {
+                    // If the locally stored highlight count is zero, use the server provided value.
                     room.setUnreadNotificationCount(
                         NotificationCountType.Highlight,
                         joinObj.unread_notifications.highlight_count ?? 0,
@@ -1327,11 +1356,13 @@ export class SyncApi {
                 // decryption
                 room.resetThreadUnreadNotificationCount(Object.keys(unreadThreadNotifications));
                 for (const [threadId, unreadNotification] of Object.entries(unreadThreadNotifications)) {
-                    room.setThreadUnreadNotificationCount(
-                        threadId,
-                        NotificationCountType.Total,
-                        unreadNotification.notification_count ?? 0,
-                    );
+                    if (!encrypted || unreadNotification.notification_count === 0) {
+                        room.setThreadUnreadNotificationCount(
+                            threadId,
+                            NotificationCountType.Total,
+                            unreadNotification.notification_count ?? 0,
+                        );
+                    }
 
                     const hasNoNotifications =
                         room.getThreadUnreadNotificationCount(threadId, NotificationCountType.Highlight) <= 0;
@@ -1457,7 +1488,7 @@ export class SyncApi {
         });
 
         // Handle leaves (e.g. kicked rooms)
-        await utils.promiseMapSeries(leaveRooms, async (leaveObj) => {
+        await promiseMapSeries(leaveRooms, async (leaveObj) => {
             const room = leaveObj.room;
             const stateEvents = this.mapSyncEventsFormat(leaveObj.state, room);
             const events = this.mapSyncEventsFormat(leaveObj.timeline, room);
@@ -1485,6 +1516,26 @@ export class SyncApi {
             });
         });
 
+        // Handle knocks
+        await promiseMapSeries(knockRooms, async (knockObj) => {
+            const room = knockObj.room;
+            const stateEvents = this.mapSyncEventsFormat(knockObj.knock_state, room);
+
+            await this.injectRoomEvents(room, stateEvents);
+
+            if (knockObj.isBrandNewRoom) {
+                room.recalculate();
+                client.store.storeRoom(room);
+                client.emit(ClientEvent.Room, room);
+            } else {
+                // Update room state for knock->leave->knock cycles
+                room.recalculate();
+            }
+            stateEvents.forEach(function (e) {
+                client.emit(ClientEvent.Event, e);
+            });
+        });
+
         // update the notification timeline, if appropriate.
         // we only do this for live events, as otherwise we can't order them sanely
         // in the timeline relative to ones paginated in by /notifications.
@@ -1501,8 +1552,8 @@ export class SyncApi {
 
         // Handle device list updates
         if (data.device_lists) {
-            if (this.syncOpts.crypto) {
-                await this.syncOpts.crypto.handleDeviceListChanges(syncEventData, data.device_lists);
+            if (this.syncOpts.cryptoCallbacks) {
+                await this.syncOpts.cryptoCallbacks.processDeviceLists(data.device_lists);
             } else {
                 // FIXME if we *don't* have a crypto module, we still need to
                 // invalidate the device lists. But that would require a
@@ -1510,24 +1561,11 @@ export class SyncApi {
             }
         }
 
-        // Handle one_time_keys_count
-        if (this.syncOpts.crypto && data.device_one_time_keys_count) {
-            const currentCount = data.device_one_time_keys_count.signed_curve25519 || 0;
-            this.syncOpts.crypto.updateOneTimeKeyCount(currentCount);
-        }
-        if (
-            this.syncOpts.crypto &&
-            (data.device_unused_fallback_key_types || data["org.matrix.msc2732.device_unused_fallback_key_types"])
-        ) {
-            // The presence of device_unused_fallback_key_types indicates that the
-            // server supports fallback keys. If there's no unused
-            // signed_curve25519 fallback key we need a new one.
-            const unusedFallbackKeys =
-                data.device_unused_fallback_key_types || data["org.matrix.msc2732.device_unused_fallback_key_types"];
-            this.syncOpts.crypto.setNeedsNewFallback(
-                Array.isArray(unusedFallbackKeys) && !unusedFallbackKeys.includes("signed_curve25519"),
-            );
-        }
+        // Handle one_time_keys_count and unused fallback keys
+        await this.syncOpts.cryptoCallbacks?.processKeyCounts(
+            data.device_one_time_keys_count,
+            data.device_unused_fallback_key_types ?? data["org.matrix.msc2732.device_unused_fallback_key_types"],
+        );
     }
 
     /**
@@ -1551,7 +1589,7 @@ export class SyncApi {
             this.pokeKeepAlive();
         }
         if (!this.connectionReturnedDefer) {
-            this.connectionReturnedDefer = utils.defer();
+            this.connectionReturnedDefer = defer();
         }
         return this.connectionReturnedDefer.promise;
     }
@@ -1566,6 +1604,17 @@ export class SyncApi {
      * @param connDidFail - True if a connectivity failure has been detected. Optional.
      */
     private pokeKeepAlive(connDidFail = false): void {
+        if (!this.running) {
+            // we are in a keepAlive, retrying to connect, but the syncronization
+            // was stopped, so we are stopping the retry.
+            clearTimeout(this.keepAliveTimer);
+            if (this.connectionReturnedDefer) {
+                this.connectionReturnedDefer.reject("SyncApi.stop() was called");
+                this.connectionReturnedDefer = undefined;
+            }
+            return;
+        }
+
         const success = (): void => {
             clearTimeout(this.keepAliveTimer);
             if (this.connectionReturnedDefer) {
@@ -1616,25 +1665,28 @@ export class SyncApi {
             );
     }
 
-    private mapSyncResponseToRoomArray<T extends ILeftRoom | IJoinedRoom | IInvitedRoom>(
+    private mapSyncResponseToRoomArray<T extends ILeftRoom | IJoinedRoom | IInvitedRoom | IKnockedRoom>(
         obj: Record<string, T>,
     ): Array<WrappedRoom<T>> {
         // Maps { roomid: {stuff}, roomid: {stuff} }
         // to
         // [{stuff+Room+isBrandNewRoom}, {stuff+Room+isBrandNewRoom}]
         const client = this.client;
-        return Object.keys(obj).map((roomId) => {
-            const arrObj = obj[roomId] as T & { room: Room; isBrandNewRoom: boolean };
-            let room = client.store.getRoom(roomId);
-            let isBrandNewRoom = false;
-            if (!room) {
-                room = this.createRoom(roomId);
-                isBrandNewRoom = true;
-            }
-            arrObj.room = room;
-            arrObj.isBrandNewRoom = isBrandNewRoom;
-            return arrObj;
-        });
+        return Object.keys(obj)
+            .filter((k) => !unsafeProp(k))
+            .map((roomId) => {
+                let room = client.store.getRoom(roomId);
+                let isBrandNewRoom = false;
+                if (!room) {
+                    room = this.createRoom(roomId);
+                    isBrandNewRoom = true;
+                }
+                return {
+                    ...obj[roomId],
+                    room,
+                    isBrandNewRoom,
+                };
+            });
     }
 
     private mapSyncEventsFormat(
@@ -1647,7 +1699,7 @@ export class SyncApi {
         }
         const mapper = this.client.getEventMapper({ decrypt });
         type TaggedEvent = (IStrippedState | IRoomEvent | IStateEvent | IMinimalEvent) & { room_id?: string };
-        return (obj.events as TaggedEvent[]).map(function (e) {
+        return (obj.events as TaggedEvent[]).filter(noUnsafeEventProps).map(function (e) {
             if (room) {
                 e.room_id = room.roomId;
             }
@@ -1698,6 +1750,20 @@ export class SyncApi {
                 },
             );
         });
+    }
+
+    private findEncryptionEvent(events?: MatrixEvent[]): MatrixEvent | undefined {
+        return events?.find((e) => e.getType() === EventType.RoomEncryption && e.getStateKey() === "");
+    }
+
+    // When processing the sync response we cannot rely on MatrixClient::isRoomEncrypted before we actually
+    // inject the events into the room object, so we have to inspect the events themselves.
+    private isRoomEncrypted(room: Room, stateEventList: MatrixEvent[], timelineEventList?: MatrixEvent[]): boolean {
+        return (
+            this.client.isRoomEncrypted(room.roomId) ||
+            !!this.findEncryptionEvent(stateEventList) ||
+            !!this.findEncryptionEvent(timelineEventList)
+        );
     }
 
     /**
@@ -1770,7 +1836,7 @@ export class SyncApi {
         // if the timeline has any state events in it.
         // This also needs to be done before running push rules on the events as they need
         // to be decorated with sender etc.
-        room.addLiveEvents(timelineEventList || [], {
+        await room.addLiveEvents(timelineEventList || [], {
             fromCache,
             timelineWasEmpty,
         });
@@ -1825,18 +1891,6 @@ export class SyncApi {
         debuglog("Browser thinks we are back online");
         this.startKeepAlives(0);
     };
-}
-
-function createNewUser(client: MatrixClient, userId: string): User {
-    const user = new User(userId);
-    client.reEmitter.reEmit(user, [
-        UserEvent.AvatarUrl,
-        UserEvent.DisplayName,
-        UserEvent.Presence,
-        UserEvent.CurrentlyActive,
-        UserEvent.LastPresenceTs,
-    ]);
-    return user;
 }
 
 // /!\ This function is not intended for public use! It's only exported from

@@ -17,7 +17,7 @@ limitations under the License.
 import { UnstableValue } from "matrix-events-sdk";
 
 import { RendezvousChannel, RendezvousFailureListener, RendezvousFailureReason, RendezvousIntent } from ".";
-import { MatrixClient } from "../client";
+import { ICrossSigningKey, IGetLoginTokenCapability, MatrixClient, GET_LOGIN_TOKEN_CAPABILITY } from "../client";
 import { CrossSigningInfo } from "../crypto/CrossSigning";
 import { DeviceInfo } from "../crypto/deviceinfo";
 import { buildFeatureSupportMap, Feature, ServerSupport } from "../feature";
@@ -100,10 +100,15 @@ export class MSC3906Rendezvous {
 
         logger.info(`Connected to secure channel with checksum: ${checksum} our intent is ${this.ourIntent}`);
 
+        // in stable and unstable r1 the availability is exposed as a capability
+        const capabilities = await this.client.getCapabilities();
+        // in r0 of MSC3882 the availability is exposed as a feature flag
         const features = await buildFeatureSupportMap(await this.client.getVersions());
+        const capability = GET_LOGIN_TOKEN_CAPABILITY.findIn<IGetLoginTokenCapability>(capabilities);
+
         // determine available protocols
-        if (features.get(Feature.LoginTokenRequest) === ServerSupport.Unsupported) {
-            logger.info("Server doesn't support MSC3882");
+        if (!capability?.enabled && features.get(Feature.LoginTokenRequest) === ServerSupport.Unsupported) {
+            logger.info("Server doesn't support get_login_token");
             await this.send({ type: PayloadType.Finish, outcome: Outcome.Unsupported });
             await this.cancel(RendezvousFailureReason.HomeserverLacksSupport);
             return undefined;
@@ -173,7 +178,9 @@ export class MSC3906Rendezvous {
         return deviceId;
     }
 
-    private async verifyAndCrossSignDevice(deviceInfo: DeviceInfo): Promise<CrossSigningInfo | DeviceInfo> {
+    private async verifyAndCrossSignDevice(
+        deviceInfo: DeviceInfo,
+    ): Promise<CrossSigningInfo | DeviceInfo | ICrossSigningKey | undefined> {
         if (!this.client.crypto) {
             throw new Error("Crypto not available on client");
         }
@@ -218,7 +225,7 @@ export class MSC3906Rendezvous {
      */
     public async verifyNewDeviceOnExistingDevice(
         timeout = 10 * 1000,
-    ): Promise<DeviceInfo | CrossSigningInfo | undefined> {
+    ): Promise<DeviceInfo | CrossSigningInfo | ICrossSigningKey | undefined> {
         if (!this.newDeviceId) {
             throw new Error("No new device to sign");
         }

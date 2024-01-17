@@ -53,6 +53,7 @@ describe("fixNotificationCountOnDecryption", () => {
     beforeEach(() => {
         mockClient = getMockClientWithEventEmitter({
             ...mockClientMethodsUser(),
+            isInitialSyncComplete: jest.fn().mockReturnValue(false),
             getPushActionsForEvent: jest.fn().mockReturnValue(mkPushAction(true, true)),
             getRoom: jest.fn().mockImplementation(() => room),
             decryptEventIfNeeded: jest.fn().mockResolvedValue(void 0),
@@ -105,6 +106,8 @@ describe("fixNotificationCountOnDecryption", () => {
             mockClient,
         );
 
+        room.addLiveEvents([event]);
+
         THREAD_ID = event.getId()!;
         threadEvent = mkEvent({
             type: EventType.RoomMessage,
@@ -134,7 +137,7 @@ describe("fixNotificationCountOnDecryption", () => {
 
         fixNotificationCountOnDecryption(mockClient, event);
 
-        expect(room.getUnreadNotificationCount(NotificationCountType.Total)).toBe(2);
+        expect(room.getUnreadNotificationCount(NotificationCountType.Total)).toBe(3);
         expect(room.getUnreadNotificationCount(NotificationCountType.Highlight)).toBe(1);
     });
 
@@ -154,11 +157,11 @@ describe("fixNotificationCountOnDecryption", () => {
 
         fixNotificationCountOnDecryption(mockClient, threadEvent);
 
-        expect(room.getThreadUnreadNotificationCount(THREAD_ID, NotificationCountType.Total)).toBe(1);
+        expect(room.getThreadUnreadNotificationCount(THREAD_ID, NotificationCountType.Total)).toBe(2);
         expect(room.getThreadUnreadNotificationCount(THREAD_ID, NotificationCountType.Highlight)).toBe(1);
     });
 
-    it("does not change the room count when there's no unread count", () => {
+    it("does not change the thread count when there's no unread count", () => {
         room.setThreadUnreadNotificationCount(THREAD_ID, NotificationCountType.Total, 0);
         room.setThreadUnreadNotificationCount(THREAD_ID, NotificationCountType.Highlight, 0);
 
@@ -188,6 +191,31 @@ describe("fixNotificationCountOnDecryption", () => {
 
         fixNotificationCountOnDecryption(mockClient, unknownThreadEvent);
 
+        expect(room.getThreadUnreadNotificationCount(THREAD_ID, NotificationCountType.Total)).toBe(0);
+        expect(room.getThreadUnreadNotificationCount(THREAD_ID, NotificationCountType.Highlight)).toBe(0);
+    });
+
+    it("does not change the total room count when an event is marked as non-notifying", () => {
+        room.setThreadUnreadNotificationCount(THREAD_ID, NotificationCountType.Total, 0);
+        room.setUnreadNotificationCount(NotificationCountType.Total, 0);
+        room.setUnreadNotificationCount(NotificationCountType.Highlight, 0);
+
+        event.getPushActions = jest.fn().mockReturnValue(mkPushAction(true, false));
+        mockClient.getPushActionsForEvent = jest.fn().mockReturnValue(mkPushAction(false, false));
+
+        fixNotificationCountOnDecryption(mockClient, event);
+        expect(room.getUnreadNotificationCount(NotificationCountType.Total)).toBe(0);
+        expect(room.getUnreadNotificationCount(NotificationCountType.Highlight)).toBe(0);
+    });
+
+    it("does not change the total room count when a threaded event is marked as non-notifying", () => {
+        room.setThreadUnreadNotificationCount(THREAD_ID, NotificationCountType.Total, 0);
+        room.setThreadUnreadNotificationCount(THREAD_ID, NotificationCountType.Highlight, 0);
+
+        threadEvent.getPushActions = jest.fn().mockReturnValue(mkPushAction(true, false));
+        mockClient.getPushActionsForEvent = jest.fn().mockReturnValue(mkPushAction(false, false));
+
+        fixNotificationCountOnDecryption(mockClient, event);
         expect(room.getThreadUnreadNotificationCount(THREAD_ID, NotificationCountType.Total)).toBe(0);
         expect(room.getThreadUnreadNotificationCount(THREAD_ID, NotificationCountType.Highlight)).toBe(0);
     });

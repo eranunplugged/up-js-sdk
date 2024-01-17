@@ -16,7 +16,7 @@ limitations under the License.
 
 import MockHttpBackend from "matrix-mock-request";
 import { Mocked } from "jest-mock";
-import * as RustSdkCryptoJs from "@matrix-org/matrix-sdk-crypto-js";
+import * as RustSdkCryptoJs from "@matrix-org/matrix-sdk-crypto-wasm";
 import {
     KeysBackupRequest,
     KeysClaimRequest,
@@ -24,12 +24,14 @@ import {
     KeysUploadRequest,
     RoomMessageRequest,
     SignatureUploadRequest,
+    UploadSigningKeysRequest,
     ToDeviceRequest,
-} from "@matrix-org/matrix-sdk-crypto-js";
+} from "@matrix-org/matrix-sdk-crypto-wasm";
 
 import { TypedEventEmitter } from "../../../src/models/typed-event-emitter";
-import { HttpApiEvent, HttpApiEventHandlerMap, MatrixHttpApi } from "../../../src";
+import { HttpApiEvent, HttpApiEventHandlerMap, IHttpOpts, MatrixHttpApi, UIAuthCallback } from "../../../src";
 import { OutgoingRequestProcessor } from "../../../src/rust-crypto/OutgoingRequestProcessor";
+import { defer } from "../../../src/utils";
 
 describe("OutgoingRequestProcessor", () => {
     /** the OutgoingRequestProcessor implementation under test */
@@ -113,7 +115,7 @@ describe("OutgoingRequestProcessor", () => {
 
     it("should handle ToDeviceRequests", async () => {
         // first, mock up the ToDeviceRequest as we might expect to receive it from the Rust layer ...
-        const testBody = '{ "foo": "bar" }';
+        const testBody = '{ "messages": { "user": {"device": "bar" }}}';
         const outgoingRequest = new ToDeviceRequest("1234", "test/type", "test/txnid", testBody);
 
         // ... then poke it into the OutgoingRequestProcessor under test.
@@ -154,7 +156,7 @@ describe("OutgoingRequestProcessor", () => {
             .when("PUT", "/_matrix")
             .check((req) => {
                 expect(req.path).toEqual(
-                    "https://example.com/_matrix/client/v3/room/test%2Froom/send/test%2Ftype/test%2Ftxnid",
+                    "https://example.com/_matrix/client/v3/rooms/test%2Froom/send/test%2Ftype/test%2Ftxnid",
                 );
                 expect(req.rawData).toEqual(testBody);
                 expect(req.headers["Accept"]).toEqual("application/json");
@@ -171,10 +173,105 @@ describe("OutgoingRequestProcessor", () => {
         httpBackend.verifyNoOutstandingRequests();
     });
 
+    it("should handle UploadSigningKeysRequest without UIA", async () => {
+        // first, mock up a request as we might expect to receive it from the Rust layer ...
+        const testReq = { foo: "bar" };
+        const outgoingRequest = new UploadSigningKeysRequest(JSON.stringify(testReq));
+
+        // ... then poke the request into the OutgoingRequestProcessor under test
+        const reqProm = processor.makeOutgoingRequest(outgoingRequest);
+
+        // Now: check that it makes a matching HTTP request.
+        const testResponse = '{"result":1}';
+        httpBackend
+            .when("POST", "/_matrix")
+            .check((req) => {
+                expect(req.path).toEqual("https://example.com/_matrix/client/v3/keys/device_signing/upload");
+                expect(JSON.parse(req.rawData)).toEqual(testReq);
+                expect(req.headers["Accept"]).toEqual("application/json");
+                expect(req.headers["Content-Type"]).toEqual("application/json");
+            })
+            .respond(200, testResponse, true);
+
+        // SigningKeysUploadRequest does not need to be marked as sent, so no call to OlmMachine.markAsSent is expected.
+
+        await httpBackend.flushAllExpected();
+        await reqProm;
+        httpBackend.verifyNoOutstandingRequests();
+    });
+
+    it("should handle UploadSigningKeysRequest with UIA", async () => {
+        // first, mock up a request as we might expect to receive it from the Rust layer ...
+        const testReq = { foo: "bar" };
+        const outgoingRequest = new UploadSigningKeysRequest(JSON.stringify(testReq));
+
+        // also create a UIA callback
+        const authCallback: UIAuthCallback<Object> = async (makeRequest) => {
+            return await makeRequest({ type: "test" });
+        };
+
+        // ... then poke the request into the OutgoingRequestProcessor under test
+        const reqProm = processor.makeOutgoingRequest(outgoingRequest, authCallback);
+
+        // Now: check that it makes a matching HTTP request.
+        const testResponse = '{"result":1}';
+        httpBackend
+            .when("POST", "/_matrix")
+            .check((req) => {
+                expect(req.path).toEqual("https://example.com/_matrix/client/v3/keys/device_signing/upload");
+                expect(JSON.parse(req.rawData)).toEqual({ foo: "bar", auth: { type: "test" } });
+                expect(req.headers["Accept"]).toEqual("application/json");
+                expect(req.headers["Content-Type"]).toEqual("application/json");
+            })
+            .respond(200, testResponse, true);
+
+        // SigningKeysUploadRequest does not need to be marked as sent, so no call to OlmMachine.markAsSent is expected.
+
+        await httpBackend.flushAllExpected();
+        await reqProm;
+        httpBackend.verifyNoOutstandingRequests();
+    });
+
     it("does not explode with unknown requests", async () => {
         const outgoingRequest = { id: "5678", type: 987 };
         const markSentCallPromise = awaitCallToMarkAsSent();
         await Promise.all([processor.makeOutgoingRequest(outgoingRequest), markSentCallPromise]);
         expect(olmMachine.markRequestAsSent).toHaveBeenCalledWith("5678", 987, "");
+    });
+
+    it("does not explode if the OlmMachine is stopped while the request is in flight", async () => {
+        // we use a real olm machine for this test
+        const olmMachine = await RustSdkCryptoJs.OlmMachine.initialize(
+            new RustSdkCryptoJs.UserId("@alice:example.com"),
+            new RustSdkCryptoJs.DeviceId("TEST_DEVICE"),
+        );
+
+        const authRequestResultDefer = defer<string>();
+
+        const authRequestCalledPromise = new Promise<void>((resolve) => {
+            const mockHttpApi = {
+                authedRequest: async () => {
+                    resolve();
+                    return await authRequestResultDefer.promise;
+                },
+            } as unknown as Mocked<MatrixHttpApi<IHttpOpts & { onlyData: true }>>;
+            processor = new OutgoingRequestProcessor(olmMachine, mockHttpApi);
+        });
+
+        // build a request
+        const request = olmMachine.queryKeysForUsers([new RustSdkCryptoJs.UserId("@bob:example.com")]);
+        const result = processor.makeOutgoingRequest(request);
+
+        // wait for the HTTP request to be made
+        await authRequestCalledPromise;
+
+        // while the HTTP request is in flight, the OlmMachine gets stopped.
+        olmMachine.close();
+
+        // the HTTP request completes...
+        authRequestResultDefer.resolve("{}");
+
+        // ... and `makeOutgoingRequest` resolves satisfactorily
+        await result;
     });
 });

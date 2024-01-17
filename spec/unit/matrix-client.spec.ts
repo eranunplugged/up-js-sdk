@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-import { mocked } from "jest-mock";
+import { Mocked, mocked } from "jest-mock";
 
 import { logger } from "../../src/logger";
 import { ClientEvent, IMatrixClientCreateOpts, ITurnServerResponse, MatrixClient, Store } from "../../src/client";
@@ -28,7 +28,6 @@ import {
     UNSTABLE_MSC3088_ENABLED,
     UNSTABLE_MSC3088_PURPOSE,
     UNSTABLE_MSC3089_TREE_SUBTYPE,
-    MSC3912_RELATION_BASED_REDACTIONS_PROP,
 } from "../../src/@types/event";
 import { MEGOLM_ALGORITHM } from "../../src/crypto/olmlib";
 import { Crypto } from "../../src/crypto";
@@ -50,6 +49,12 @@ import {
     MatrixScheduler,
     Method,
     Room,
+    EventTimelineSet,
+    PushRuleActionName,
+    TweakName,
+    RuleId,
+    IPushRule,
+    ConditionKind,
 } from "../../src";
 import { supportsMatrixCall } from "../../src/webrtc/call";
 import { makeBeaconEvent } from "../test-utils/beacon";
@@ -63,6 +68,8 @@ import { QueryDict } from "../../src/utils";
 import { SyncState } from "../../src/sync";
 import * as featureUtils from "../../src/feature";
 import { StubStore } from "../../src/store/stub";
+import { SecretStorageKeyDescriptionAesV1, ServerSideSecretStorageImpl } from "../../src/secret-storage";
+import { CryptoBackend } from "../../src/common-crypto/CryptoBackend";
 
 jest.useFakeTimers();
 
@@ -173,9 +180,7 @@ describe("MatrixClient", function () {
         data: SYNC_DATA,
     };
 
-    const unstableFeatures: Record<string, boolean> = {
-        "org.matrix.msc3440.stable": true,
-    };
+    let unstableFeatures: Record<string, boolean> = {};
 
     // items are popped off when processed and block if no items left.
     let httpLookups: HttpLookup[] = [];
@@ -196,7 +201,7 @@ describe("MatrixClient", function () {
         if (path === KEEP_ALIVE_PATH && acceptKeepalives) {
             return Promise.resolve({
                 unstable_features: unstableFeatures,
-                versions: ["r0.6.0", "r0.6.1"],
+                versions: ["v1.1"],
             });
         }
         const next = httpLookups.shift();
@@ -323,6 +328,7 @@ describe("MatrixClient", function () {
                 "storeFilter",
                 "startup",
                 "deleteAllData",
+                "setUserCreator",
             ] as const
         ).reduce((r, k) => {
             r[k] = jest.fn();
@@ -334,6 +340,12 @@ describe("MatrixClient", function () {
         store.getClientOptions = jest.fn().mockReturnValue(Promise.resolve(null));
         store.storeClientOptions = jest.fn().mockReturnValue(Promise.resolve(null));
         store.isNewlyCreated = jest.fn().mockReturnValue(Promise.resolve(true));
+
+        // set unstableFeatures to a defined state before each test
+        unstableFeatures = {
+            "org.matrix.msc3440.stable": true,
+        };
+
         makeClient();
 
         // set reasonable working defaults
@@ -725,6 +737,7 @@ describe("MatrixClient", function () {
             getMyMembership: () => "join",
             currentState: {
                 getStateEvents: (eventType, stateKey) => {
+                    /* eslint-disable jest/no-conditional-expect */
                     if (eventType === EventType.RoomCreate) {
                         expect(stateKey).toEqual("");
                         return new MatrixEvent({
@@ -743,6 +756,7 @@ describe("MatrixClient", function () {
                     } else {
                         throw new Error("Unexpected event type or state key");
                     }
+                    /* eslint-enable jest/no-conditional-expect */
                 },
             } as Room["currentState"],
         } as unknown as Room;
@@ -785,6 +799,7 @@ describe("MatrixClient", function () {
             getMyMembership: () => "join",
             currentState: {
                 getStateEvents: (eventType, stateKey) => {
+                    /* eslint-disable jest/no-conditional-expect */
                     if (eventType === EventType.RoomCreate) {
                         expect(stateKey).toEqual("");
                         return new MatrixEvent({
@@ -803,6 +818,7 @@ describe("MatrixClient", function () {
                     } else {
                         throw new Error("Unexpected event type or state key");
                     }
+                    /* eslint-enable jest/no-conditional-expect */
                 },
             } as Room["currentState"],
         } as unknown as Room;
@@ -820,6 +836,7 @@ describe("MatrixClient", function () {
             getMyMembership: () => "join",
             currentState: {
                 getStateEvents: (eventType, stateKey) => {
+                    /* eslint-disable jest/no-conditional-expect */
                     if (eventType === EventType.RoomCreate) {
                         expect(stateKey).toEqual("");
                         return new MatrixEvent({
@@ -837,6 +854,7 @@ describe("MatrixClient", function () {
                     } else {
                         throw new Error("Unexpected event type or state key");
                     }
+                    /* eslint-enable jest/no-conditional-expect */
                 },
             } as Room["currentState"],
         } as unknown as Room;
@@ -858,6 +876,7 @@ describe("MatrixClient", function () {
         const syncPromise = new Promise<void>((resolve, reject) => {
             client.on(ClientEvent.Sync, function syncListener(state) {
                 if (state === "SYNCING") {
+                    // eslint-disable-next-line jest/no-conditional-expect
                     expect(httpLookups.length).toEqual(0);
                     client.removeListener(ClientEvent.Sync, syncListener);
                     resolve();
@@ -893,7 +912,7 @@ describe("MatrixClient", function () {
     describe("getOrCreateFilter", function () {
         it("should POST createFilter if no id is present in localStorage", function () {});
         it("should use an existing filter if id is present in localStorage", function () {});
-        it("should handle localStorage filterId missing from the server", function (done) {
+        it("should handle localStorage filterId missing from the server", async () => {
             function getFilterName(userId: string, suffix?: string) {
                 // scope this on the user ID because people may login on many accounts
                 // and they all need to be stored!
@@ -919,10 +938,8 @@ describe("MatrixClient", function () {
             client.store.setFilterIdByName(filterName, invalidFilterId);
             const filter = new Filter(client.credentials.userId);
 
-            client.getOrCreateFilter(filterName, filter).then(function (filterId) {
-                expect(filterId).toEqual(FILTER_RESPONSE.data?.filter_id);
-                done();
-            });
+            const filterId = await client.getOrCreateFilter(filterName, filter);
+            expect(filterId).toEqual(FILTER_RESPONSE.data?.filter_id);
         });
     });
 
@@ -933,7 +950,7 @@ describe("MatrixClient", function () {
             expect(client.retryImmediately()).toBe(false);
         });
 
-        it("should work on /filter", function (done) {
+        it("should work on /filter", async () => {
             httpLookups = [];
             httpLookups.push(PUSH_RULES_RESPONSE);
             httpLookups.push({
@@ -944,23 +961,28 @@ describe("MatrixClient", function () {
             httpLookups.push(FILTER_RESPONSE);
             httpLookups.push(SYNC_RESPONSE);
 
-            client.on(ClientEvent.Sync, function syncListener(state) {
-                if (state === "ERROR" && httpLookups.length > 0) {
-                    expect(httpLookups.length).toEqual(2);
-                    expect(client.retryImmediately()).toBe(true);
-                    jest.advanceTimersByTime(1);
-                } else if (state === "PREPARED" && httpLookups.length === 0) {
-                    client.removeListener(ClientEvent.Sync, syncListener);
-                    done();
-                } else {
-                    // unexpected state transition!
-                    expect(state).toEqual(null);
-                }
+            const wasPreparedPromise = new Promise((resolve) => {
+                client.on(ClientEvent.Sync, function syncListener(state) {
+                    /* eslint-disable jest/no-conditional-expect */
+                    if (state === "ERROR" && httpLookups.length > 0) {
+                        expect(httpLookups.length).toEqual(2);
+                        expect(client.retryImmediately()).toBe(true);
+                        jest.advanceTimersByTime(1);
+                    } else if (state === "PREPARED" && httpLookups.length === 0) {
+                        client.removeListener(ClientEvent.Sync, syncListener);
+                        resolve(null);
+                    } else {
+                        // unexpected state transition!
+                        expect(state).toEqual(null);
+                    }
+                    /* eslint-enable jest/no-conditional-expect */
+                });
             });
-            client.startClient();
+            await client.startClient();
+            await wasPreparedPromise;
         });
 
-        it("should work on /sync", function (done) {
+        it("should work on /sync", async () => {
             httpLookups.push({
                 method: "GET",
                 path: "/sync",
@@ -972,22 +994,27 @@ describe("MatrixClient", function () {
                 data: SYNC_DATA,
             });
 
-            client.on(ClientEvent.Sync, function syncListener(state) {
-                if (state === "ERROR" && httpLookups.length > 0) {
-                    expect(httpLookups.length).toEqual(1);
-                    expect(client.retryImmediately()).toBe(true);
-                    jest.advanceTimersByTime(1);
-                } else if (state === "RECONNECTING" && httpLookups.length > 0) {
-                    jest.advanceTimersByTime(10000);
-                } else if (state === "SYNCING" && httpLookups.length === 0) {
-                    client.removeListener(ClientEvent.Sync, syncListener);
-                    done();
-                }
+            const isSyncingPromise = new Promise((resolve) => {
+                client.on(ClientEvent.Sync, function syncListener(state) {
+                    if (state === "ERROR" && httpLookups.length > 0) {
+                        /* eslint-disable jest/no-conditional-expect */
+                        expect(httpLookups.length).toEqual(1);
+                        expect(client.retryImmediately()).toBe(true);
+                        /* eslint-enable jest/no-conditional-expect */
+                        jest.advanceTimersByTime(1);
+                    } else if (state === "RECONNECTING" && httpLookups.length > 0) {
+                        jest.advanceTimersByTime(10000);
+                    } else if (state === "SYNCING" && httpLookups.length === 0) {
+                        client.removeListener(ClientEvent.Sync, syncListener);
+                        resolve(null);
+                    }
+                });
             });
-            client.startClient();
+            await client.startClient();
+            await isSyncingPromise;
         });
 
-        it("should work on /pushrules", function (done) {
+        it("should work on /pushrules", async () => {
             httpLookups = [];
             httpLookups.push({
                 method: "GET",
@@ -998,20 +1025,25 @@ describe("MatrixClient", function () {
             httpLookups.push(FILTER_RESPONSE);
             httpLookups.push(SYNC_RESPONSE);
 
-            client.on(ClientEvent.Sync, function syncListener(state) {
-                if (state === "ERROR" && httpLookups.length > 0) {
-                    expect(httpLookups.length).toEqual(3);
-                    expect(client.retryImmediately()).toBe(true);
-                    jest.advanceTimersByTime(1);
-                } else if (state === "PREPARED" && httpLookups.length === 0) {
-                    client.removeListener(ClientEvent.Sync, syncListener);
-                    done();
-                } else {
-                    // unexpected state transition!
-                    expect(state).toEqual(null);
-                }
+            const wasPreparedPromise = new Promise((resolve) => {
+                client.on(ClientEvent.Sync, function syncListener(state) {
+                    /* eslint-disable jest/no-conditional-expect */
+                    if (state === "ERROR" && httpLookups.length > 0) {
+                        expect(httpLookups.length).toEqual(3);
+                        expect(client.retryImmediately()).toBe(true);
+                        jest.advanceTimersByTime(1);
+                    } else if (state === "PREPARED" && httpLookups.length === 0) {
+                        client.removeListener(ClientEvent.Sync, syncListener);
+                        resolve(null);
+                    } else {
+                        // unexpected state transition!
+                        expect(state).toEqual(null);
+                    }
+                    /* eslint-enable jest/no-conditional-expect */
+                });
             });
-            client.startClient();
+            await client.startClient();
+            await wasPreparedPromise;
         });
     });
 
@@ -1035,14 +1067,17 @@ describe("MatrixClient", function () {
             };
         }
 
-        it("should transition null -> PREPARED after the first /sync", function (done) {
+        it("should transition null -> PREPARED after the first /sync", async () => {
             const expectedStates: [string, string | null][] = [];
             expectedStates.push(["PREPARED", null]);
-            client.on(ClientEvent.Sync, syncChecker(expectedStates, done));
-            client.startClient();
+            const didSyncPromise = new Promise((resolve) => {
+                client.on(ClientEvent.Sync, syncChecker(expectedStates, resolve));
+            });
+            await client.startClient();
+            await didSyncPromise;
         });
 
-        it("should transition null -> ERROR after a failed /filter", function (done) {
+        it("should transition null -> ERROR after a failed /filter", async () => {
             const expectedStates: [string, string | null][] = [];
             httpLookups = [];
             httpLookups.push(PUSH_RULES_RESPONSE);
@@ -1052,14 +1087,17 @@ describe("MatrixClient", function () {
                 error: { errcode: "NOPE_NOPE_NOPE" },
             });
             expectedStates.push(["ERROR", null]);
-            client.on(ClientEvent.Sync, syncChecker(expectedStates, done));
-            client.startClient();
+            const didSyncPromise = new Promise((resolve) => {
+                client.on(ClientEvent.Sync, syncChecker(expectedStates, resolve));
+            });
+            await client.startClient();
+            await didSyncPromise;
         });
 
         // Disabled because now `startClient` makes a legit call to `/versions`
         // And those tests are really unhappy about it... Not possible to figure
         // out what a good resolution would look like
-        xit("should transition ERROR -> CATCHUP after /sync if prev failed", function (done) {
+        it.skip("should transition ERROR -> CATCHUP after /sync if prev failed", async () => {
             const expectedStates: [string, string | null][] = [];
             acceptKeepalives = false;
             httpLookups = [];
@@ -1089,19 +1127,25 @@ describe("MatrixClient", function () {
             expectedStates.push(["RECONNECTING", null]);
             expectedStates.push(["ERROR", "RECONNECTING"]);
             expectedStates.push(["CATCHUP", "ERROR"]);
-            client.on(ClientEvent.Sync, syncChecker(expectedStates, done));
-            client.startClient();
+            const didSyncPromise = new Promise((resolve) => {
+                client.on(ClientEvent.Sync, syncChecker(expectedStates, resolve));
+            });
+            await client.startClient();
+            await didSyncPromise;
         });
 
-        it("should transition PREPARED -> SYNCING after /sync", function (done) {
+        it("should transition PREPARED -> SYNCING after /sync", async () => {
             const expectedStates: [string, string | null][] = [];
             expectedStates.push(["PREPARED", null]);
             expectedStates.push(["SYNCING", "PREPARED"]);
-            client.on(ClientEvent.Sync, syncChecker(expectedStates, done));
-            client.startClient();
+            const didSyncPromise = new Promise((resolve) => {
+                client.on(ClientEvent.Sync, syncChecker(expectedStates, resolve));
+            });
+            await client.startClient();
+            await didSyncPromise;
         });
 
-        xit("should transition SYNCING -> ERROR after a failed /sync", function (done) {
+        it.skip("should transition SYNCING -> ERROR after a failed /sync", async () => {
             acceptKeepalives = false;
             const expectedStates: [string, string | null][] = [];
             httpLookups.push({
@@ -1119,11 +1163,14 @@ describe("MatrixClient", function () {
             expectedStates.push(["SYNCING", "PREPARED"]);
             expectedStates.push(["RECONNECTING", "SYNCING"]);
             expectedStates.push(["ERROR", "RECONNECTING"]);
-            client.on(ClientEvent.Sync, syncChecker(expectedStates, done));
-            client.startClient();
+            const didSyncPromise = new Promise((resolve) => {
+                client.on(ClientEvent.Sync, syncChecker(expectedStates, resolve));
+            });
+            await client.startClient();
+            await didSyncPromise;
         });
 
-        xit("should transition ERROR -> SYNCING after /sync if prev failed", function (done) {
+        it.skip("should transition ERROR -> SYNCING after /sync if prev failed", async () => {
             const expectedStates: [string, string | null][] = [];
             httpLookups.push({
                 method: "GET",
@@ -1135,11 +1182,14 @@ describe("MatrixClient", function () {
             expectedStates.push(["PREPARED", null]);
             expectedStates.push(["SYNCING", "PREPARED"]);
             expectedStates.push(["ERROR", "SYNCING"]);
-            client.on(ClientEvent.Sync, syncChecker(expectedStates, done));
-            client.startClient();
+            const didSyncPromise = new Promise((resolve) => {
+                client.on(ClientEvent.Sync, syncChecker(expectedStates, resolve));
+            });
+            await client.startClient();
+            await didSyncPromise;
         });
 
-        it("should transition SYNCING -> SYNCING on subsequent /sync successes", function (done) {
+        it("should transition SYNCING -> SYNCING on subsequent /sync successes", async () => {
             const expectedStates: [string, string | null][] = [];
             httpLookups.push(SYNC_RESPONSE);
             httpLookups.push(SYNC_RESPONSE);
@@ -1147,11 +1197,14 @@ describe("MatrixClient", function () {
             expectedStates.push(["PREPARED", null]);
             expectedStates.push(["SYNCING", "PREPARED"]);
             expectedStates.push(["SYNCING", "SYNCING"]);
-            client.on(ClientEvent.Sync, syncChecker(expectedStates, done));
-            client.startClient();
+            const didSyncPromise = new Promise((resolve) => {
+                client.on(ClientEvent.Sync, syncChecker(expectedStates, resolve));
+            });
+            await client.startClient();
+            await didSyncPromise;
         });
 
-        xit("should transition ERROR -> ERROR if keepalive keeps failing", function (done) {
+        it.skip("should transition ERROR -> ERROR if keepalive keeps failing", async () => {
             acceptKeepalives = false;
             const expectedStates: [string, string | null][] = [];
             httpLookups.push({
@@ -1175,8 +1228,11 @@ describe("MatrixClient", function () {
             expectedStates.push(["RECONNECTING", "SYNCING"]);
             expectedStates.push(["ERROR", "RECONNECTING"]);
             expectedStates.push(["ERROR", "ERROR"]);
-            client.on(ClientEvent.Sync, syncChecker(expectedStates, done));
-            client.startClient();
+            const didSyncPromise = new Promise((resolve) => {
+                client.on(ClientEvent.Sync, syncChecker(expectedStates, resolve));
+            });
+            await client.startClient();
+            await didSyncPromise;
         });
     });
 
@@ -1214,7 +1270,7 @@ describe("MatrixClient", function () {
             expect(httpLookups.length).toBe(0);
         });
 
-        xit("should be able to peek into a room using peekInRoom", function (done) {});
+        it.skip("should be able to peek into a room using peekInRoom", function () {});
     });
 
     describe("getPresence", function () {
@@ -1321,10 +1377,10 @@ describe("MatrixClient", function () {
             await client.redactEvent(roomId, eventId, txnId, { reason });
         });
 
-        describe("when calling with with_relations", () => {
+        describe("when calling with 'with_rel_types'", () => {
             const eventId = "$event42:example.org";
 
-            it("should raise an error if server has no support for relation based redactions", async () => {
+            it("should raise an error if the server has no support for relation based redactions", async () => {
                 // load supported features
                 await client.getVersions();
 
@@ -1332,9 +1388,9 @@ describe("MatrixClient", function () {
 
                 expect(() => {
                     client.redactEvent(roomId, eventId, txnId, {
-                        with_relations: [RelationType.Reference],
+                        with_rel_types: [RelationType.Reference],
                     });
-                }).toThrowError(
+                }).toThrow(
                     new Error(
                         "Server does not support relation based redactions " +
                             `roomId ${roomId} eventId ${eventId} txnId: ${txnId} threadId null`,
@@ -1342,34 +1398,30 @@ describe("MatrixClient", function () {
                 );
             });
 
-            describe("and the server supports relation based redactions (unstable)", () => {
-                beforeEach(async () => {
-                    unstableFeatures["org.matrix.msc3912"] = true;
-                    // load supported features
-                    await client.getVersions();
-                });
+            it("and the server has unstable support for relation based redactions, it should send 'org.matrix.msc3912.with_relations' in the request body", async () => {
+                unstableFeatures["org.matrix.msc3912"] = true;
+                // load supported features
+                await client.getVersions();
 
-                it("should send with_relations in the request body", async () => {
-                    const txnId = client.makeTxnId();
+                const txnId = client.makeTxnId();
 
-                    httpLookups = [
-                        {
-                            method: "PUT",
-                            path:
-                                `/rooms/${encodeURIComponent(roomId)}/redact/${encodeURIComponent(eventId)}` +
-                                `/${encodeURIComponent(txnId)}`,
-                            expectBody: {
-                                reason: "redaction test",
-                                [MSC3912_RELATION_BASED_REDACTIONS_PROP.unstable!]: [RelationType.Reference],
-                            },
-                            data: { event_id: eventId },
+                httpLookups = [
+                    {
+                        method: "PUT",
+                        path:
+                            `/rooms/${encodeURIComponent(roomId)}/redact/${encodeURIComponent(eventId)}` +
+                            `/${encodeURIComponent(txnId)}`,
+                        expectBody: {
+                            reason: "redaction test",
+                            ["org.matrix.msc3912.with_relations"]: ["m.reference"],
                         },
-                    ];
+                        data: { event_id: eventId },
+                    },
+                ];
 
-                    await client.redactEvent(roomId, eventId, txnId, {
-                        reason: "redaction test",
-                        with_relations: [RelationType.Reference],
-                    });
+                await client.redactEvent(roomId, eventId, txnId, {
+                    reason: "redaction test",
+                    with_rel_types: [RelationType.Reference],
                 });
             });
         });
@@ -1464,7 +1516,7 @@ describe("MatrixClient", function () {
             { startOpts: { threadSupport: false }, hasThreadSupport: false },
             { startOpts: { experimentalThreadSupport: true }, hasThreadSupport: true },
             { startOpts: { experimentalThreadSupport: true, threadSupport: false }, hasThreadSupport: false },
-        ])("enabled thread support for the SDK instance ", async ({ startOpts, hasThreadSupport }) => {
+        ])("enabled thread support for the SDK instance", async ({ startOpts, hasThreadSupport }) => {
             await client.startClient(startOpts);
             expect(client.supportsThreads()).toBe(hasThreadSupport);
         });
@@ -2215,7 +2267,6 @@ describe("MatrixClient", function () {
         function roomCreateEvent(newRoomId: string, predecessorRoomId: string): MatrixEvent {
             return new MatrixEvent({
                 content: {
-                    "creator": "@daryl:alexandria.example.com",
                     "m.federate": true,
                     "predecessor": {
                         event_id: "id_of_last_event",
@@ -2410,31 +2461,6 @@ describe("MatrixClient", function () {
                 expect(rooms).toContain(room1);
                 expect(rooms).toContain(room2);
             });
-
-            it("Ignores m.predecessor if we don't ask to use it", () => {
-                // Given 6 rooms, 2 of which have been replaced, and 2 of which WERE
-                // replaced by create events, but are now NOT replaced, because an
-                // m.predecessor event has changed the room's predecessor.
-                const {
-                    room1,
-                    room2,
-                    replacedByCreate1,
-                    replacedByCreate2,
-                    replacedByDynamicPredecessor1,
-                    replacedByDynamicPredecessor2,
-                } = setUpReplacedRooms();
-
-                // When we ask for the visible rooms
-                const rooms = client.getVisibleRooms(); // Don't supply msc3946ProcessDynamicPredecessor
-
-                // Then we only get the ones that have not been replaced
-                expect(rooms).not.toContain(replacedByCreate1);
-                expect(rooms).not.toContain(replacedByCreate2);
-                expect(rooms).toContain(replacedByDynamicPredecessor1);
-                expect(rooms).toContain(replacedByDynamicPredecessor2);
-                expect(rooms).toContain(room1);
-                expect(rooms).toContain(room2);
-            });
         });
 
         describe("getRoomUpgradeHistory", () => {
@@ -2619,7 +2645,7 @@ describe("MatrixClient", function () {
                 expect(history.map((room) => room.roomId)).toEqual([room1.roomId]);
             });
 
-            it("Without verify links, includes predecessors that don't point forwards", () => {
+            it("Without verify links, includes successors that don't point backwards", () => {
                 // Given predecessors point forwards with tombstones, but
                 // successors do not point back with create events.
                 const [room1, room2, room3, room4] = createRoomHistory(false, true);
@@ -2683,6 +2709,297 @@ describe("MatrixClient", function () {
                 // So we get no history back
                 expect(history.map((room) => room.roomId)).toEqual([room3.roomId]);
             });
+        });
+    });
+
+    // these wrappers are deprecated, but we need coverage of them to pass the quality gate
+    describe("SecretStorage wrappers", () => {
+        let mockSecretStorage: Mocked<ServerSideSecretStorageImpl>;
+
+        beforeEach(() => {
+            mockSecretStorage = {
+                getDefaultKeyId: jest.fn(),
+                hasKey: jest.fn(),
+                isStored: jest.fn(),
+            } as unknown as Mocked<ServerSideSecretStorageImpl>;
+            client["_secretStorage"] = mockSecretStorage;
+        });
+
+        it("hasSecretStorageKey", async () => {
+            mockSecretStorage.hasKey.mockResolvedValue(false);
+            expect(await client.hasSecretStorageKey("mykey")).toBe(false);
+            expect(mockSecretStorage.hasKey).toHaveBeenCalledWith("mykey");
+        });
+
+        it("isSecretStored", async () => {
+            const mockResult = { key: {} as SecretStorageKeyDescriptionAesV1 };
+            mockSecretStorage.isStored.mockResolvedValue(mockResult);
+            expect(await client.isSecretStored("mysecret")).toBe(mockResult);
+            expect(mockSecretStorage.isStored).toHaveBeenCalledWith("mysecret");
+        });
+
+        it("getDefaultSecretStorageKeyId", async () => {
+            mockSecretStorage.getDefaultKeyId.mockResolvedValue("bzz");
+            expect(await client.getDefaultSecretStorageKeyId()).toEqual("bzz");
+        });
+
+        it("isKeyBackupKeyStored", async () => {
+            mockSecretStorage.isStored.mockResolvedValue(null);
+            expect(await client.isKeyBackupKeyStored()).toBe(null);
+            expect(mockSecretStorage.isStored).toHaveBeenCalledWith("m.megolm_backup.v1");
+        });
+    });
+
+    // these wrappers are deprecated, but we need coverage of them to pass the quality gate
+    describe("Crypto wrappers", () => {
+        describe("exception if no crypto", () => {
+            it("isCrossSigningReady", () => {
+                expect(() => client.isCrossSigningReady()).toThrow("End-to-end encryption disabled");
+            });
+
+            it("bootstrapCrossSigning", () => {
+                expect(() => client.bootstrapCrossSigning({})).toThrow("End-to-end encryption disabled");
+            });
+
+            it("isSecretStorageReady", () => {
+                expect(() => client.isSecretStorageReady()).toThrow("End-to-end encryption disabled");
+            });
+        });
+
+        describe("defer to crypto backend", () => {
+            let mockCryptoBackend: Mocked<CryptoBackend>;
+
+            beforeEach(() => {
+                mockCryptoBackend = {
+                    isCrossSigningReady: jest.fn(),
+                    bootstrapCrossSigning: jest.fn(),
+                    isSecretStorageReady: jest.fn(),
+                    stop: jest.fn().mockResolvedValue(undefined),
+                } as unknown as Mocked<CryptoBackend>;
+                client["cryptoBackend"] = mockCryptoBackend;
+            });
+
+            it("isCrossSigningReady", async () => {
+                const testResult = "test";
+                mockCryptoBackend.isCrossSigningReady.mockResolvedValue(testResult as unknown as boolean);
+                expect(await client.isCrossSigningReady()).toBe(testResult);
+                expect(mockCryptoBackend.isCrossSigningReady).toHaveBeenCalledTimes(1);
+            });
+
+            it("bootstrapCrossSigning", async () => {
+                const testOpts = {};
+                mockCryptoBackend.bootstrapCrossSigning.mockResolvedValue(undefined);
+                await client.bootstrapCrossSigning(testOpts);
+                expect(mockCryptoBackend.bootstrapCrossSigning).toHaveBeenCalledTimes(1);
+                expect(mockCryptoBackend.bootstrapCrossSigning).toHaveBeenCalledWith(testOpts);
+            });
+
+            it("isSecretStorageReady", async () => {
+                client["cryptoBackend"] = mockCryptoBackend;
+                const testResult = "test";
+                mockCryptoBackend.isSecretStorageReady.mockResolvedValue(testResult as unknown as boolean);
+                expect(await client.isSecretStorageReady()).toBe(testResult);
+                expect(mockCryptoBackend.isSecretStorageReady).toHaveBeenCalledTimes(1);
+            });
+        });
+    });
+
+    describe("paginateEventTimeline()", () => {
+        describe("notifications timeline", () => {
+            const unsafeNotification = {
+                actions: ["notify"],
+                room_id: "__proto__",
+                event: testUtils.mkMessage({
+                    user: "@villain:server.org",
+                    room: "!roomId:server.org",
+                    msg: "I am nefarious",
+                }),
+                profile_tag: null,
+                read: true,
+                ts: 12345,
+            };
+
+            const goodNotification = {
+                actions: ["notify"],
+                room_id: "!favouriteRoom:server.org",
+                event: new MatrixEvent({
+                    sender: "@bob:server.org",
+                    room_id: "!roomId:server.org",
+                    type: "m.call.invite",
+                    content: {},
+                }),
+                profile_tag: null,
+                read: true,
+                ts: 12345,
+            };
+
+            const highlightNotification = {
+                actions: ["notify", { set_tweak: "highlight", value: true }],
+                room_id: "!roomId:server.org",
+                event: testUtils.mkMessage({
+                    user: "@bob:server.org",
+                    room: "!roomId:server.org",
+                    msg: "I am highlighted banana",
+                }),
+                profile_tag: null,
+                read: true,
+                ts: 12345,
+            };
+
+            const setNotifsResponse = (notifications: any[] = []): void => {
+                const response: HttpLookup = {
+                    method: "GET",
+                    path: "/notifications",
+                    data: { notifications: JSON.parse(JSON.stringify(notifications)) },
+                };
+                httpLookups = [response];
+            };
+
+            const callRule: IPushRule = {
+                actions: [PushRuleActionName.Notify],
+                conditions: [
+                    {
+                        kind: ConditionKind.EventMatch,
+                        key: "type",
+                        pattern: "m.call.invite",
+                    },
+                ],
+                default: true,
+                enabled: true,
+                rule_id: ".m.rule.call",
+            };
+            const masterRule: IPushRule = {
+                actions: [PushRuleActionName.DontNotify],
+                conditions: [],
+                default: true,
+                enabled: false,
+                rule_id: RuleId.Master,
+            };
+            const bananaRule = {
+                actions: [PushRuleActionName.Notify, { set_tweak: TweakName.Highlight, value: true }],
+                pattern: "banana",
+                rule_id: "banana",
+                default: false,
+                enabled: true,
+            } as IPushRule;
+            const pushRules = {
+                global: {
+                    underride: [callRule],
+                    override: [masterRule],
+                    content: [bananaRule],
+                },
+            };
+
+            beforeEach(() => {
+                makeClient();
+
+                // this is how notif timeline is set up in react-sdk
+                const notifTimelineSet = new EventTimelineSet(undefined, {
+                    timelineSupport: true,
+                    pendingEvents: false,
+                });
+                notifTimelineSet.getLiveTimeline().setPaginationToken("", EventTimeline.BACKWARDS);
+                client.setNotifTimelineSet(notifTimelineSet);
+
+                setNotifsResponse();
+
+                client.setPushRules(pushRules);
+            });
+
+            it("should throw when trying to paginate forwards", async () => {
+                const timeline = client.getNotifTimelineSet()!.getLiveTimeline();
+                await expect(
+                    async () => await client.paginateEventTimeline(timeline, { backwards: false }),
+                ).rejects.toThrow("paginateNotifTimeline can only paginate backwards");
+            });
+
+            it("defaults limit to 30 events", async () => {
+                jest.spyOn(client.http, "authedRequest");
+                const timeline = client.getNotifTimelineSet()!.getLiveTimeline();
+                await client.paginateEventTimeline(timeline, { backwards: true });
+
+                expect(client.http.authedRequest).toHaveBeenCalledWith(Method.Get, "/notifications", {
+                    limit: "30",
+                    only: "highlight",
+                });
+            });
+
+            it("filters out unsafe notifications", async () => {
+                setNotifsResponse([unsafeNotification, goodNotification, highlightNotification]);
+
+                const timelineSet = client.getNotifTimelineSet()!;
+                const timeline = timelineSet.getLiveTimeline();
+                await client.paginateEventTimeline(timeline, { backwards: true });
+
+                // badNotification not added to timeline
+                const timelineEvents = timeline.getEvents();
+                expect(timelineEvents.length).toEqual(2);
+            });
+
+            it("sets push details on events and add to timeline", async () => {
+                setNotifsResponse([goodNotification, highlightNotification]);
+
+                const timelineSet = client.getNotifTimelineSet()!;
+                const timeline = timelineSet.getLiveTimeline();
+                await client.paginateEventTimeline(timeline, { backwards: true });
+
+                const [highlightEvent, goodEvent] = timeline.getEvents();
+                expect(highlightEvent.getPushActions()).toEqual({
+                    notify: true,
+                    tweaks: {
+                        highlight: true,
+                    },
+                });
+                expect(highlightEvent.getPushDetails().rule).toEqual({
+                    ...bananaRule,
+                    kind: "content",
+                });
+                expect(goodEvent.getPushActions()).toEqual({
+                    notify: true,
+                    tweaks: {
+                        highlight: false,
+                    },
+                });
+            });
+        });
+    });
+
+    describe("pushers", () => {
+        const pusher = {
+            app_id: "test",
+            app_display_name: "Test App",
+            data: {},
+            device_display_name: "test device",
+            kind: "http",
+            lang: "en-NZ",
+            pushkey: "1234",
+        };
+
+        beforeEach(() => {
+            makeClient();
+            const response: HttpLookup = {
+                method: Method.Post,
+                path: "/pushers/set",
+                data: {},
+            };
+            httpLookups = [response];
+            jest.spyOn(client.http, "authedRequest").mockClear();
+        });
+
+        it("should make correct request to set pusher", async () => {
+            const result = await client.setPusher(pusher);
+            expect(client.http.authedRequest).toHaveBeenCalledWith(Method.Post, "/pushers/set", undefined, pusher);
+            expect(result).toEqual({});
+        });
+
+        it("should make correct request to remove pusher", async () => {
+            const result = await client.removePusher(pusher.pushkey, pusher.app_id);
+            expect(client.http.authedRequest).toHaveBeenCalledWith(Method.Post, "/pushers/set", undefined, {
+                pushkey: pusher.pushkey,
+                app_id: pusher.app_id,
+                kind: null,
+            });
+            expect(result).toEqual({});
         });
     });
 });

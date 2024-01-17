@@ -16,24 +16,40 @@ import {
     MAIN_ROOM_TIMELINE,
     Receipt,
     ReceiptCache,
-    Receipts,
     ReceiptType,
     WrappedReceipt,
 } from "../@types/read_receipts";
 import { ListenerMap, TypedEventEmitter } from "./typed-event-emitter";
-import * as utils from "../utils";
+import { isSupportedReceiptType } from "../utils";
 import { MatrixEvent } from "./event";
 import { EventType } from "../@types/event";
 import { EventTimelineSet } from "./event-timeline-set";
+import { MapWithDefault } from "../utils";
+import { NotificationCountType } from "./room";
+import { logger } from "../logger";
+import { inMainTimelineForReceipt, threadIdForReceipt } from "../client";
 
-export function synthesizeReceipt(userId: string, event: MatrixEvent, receiptType: ReceiptType): MatrixEvent {
+/**
+ * Create a synthetic receipt for the given event
+ * @param userId - The user ID if the receipt sender
+ * @param event - The event that is to be acknowledged
+ * @param receiptType - The type of receipt
+ * @param unthreaded - the receipt is unthreaded
+ * @returns a new event with the synthetic receipt in it
+ */
+export function synthesizeReceipt(
+    userId: string,
+    event: MatrixEvent,
+    receiptType: ReceiptType,
+    unthreaded = false,
+): MatrixEvent {
     return new MatrixEvent({
         content: {
             [event.getId()!]: {
                 [receiptType]: {
                     [userId]: {
                         ts: event.getTs(),
-                        thread_id: event.threadRootId ?? MAIN_ROOM_TIMELINE,
+                        ...(!unthreaded && { thread_id: threadIdForReceipt(event) }),
                     },
                 },
             },
@@ -55,8 +71,12 @@ export abstract class ReadReceipt<
     // the form of this structure. This is sub-optimal for the exposed APIs
     // which pass in an event ID and get back some receipts, so we also store
     // a pre-cached list for this purpose.
-    private receipts: Receipts = {}; // { receipt_type: { user_id: Receipt } }
-    private receiptCacheByEventId: ReceiptCache = {}; // { event_id: CachedReceipt[] }
+    // Map: receipt type → user Id → receipt
+    private receipts = new MapWithDefault<
+        string,
+        Map<string, [realReceipt: WrappedReceipt | null, syntheticReceipt: WrappedReceipt | null]>
+    >(() => new Map());
+    private receiptCacheByEventId: ReceiptCache = new Map();
 
     public abstract getUnfilteredTimelineSet(): EventTimelineSet;
     public abstract timeline: MatrixEvent[];
@@ -73,7 +93,7 @@ export abstract class ReadReceipt<
         ignoreSynthesized = false,
         receiptType = ReceiptType.Read,
     ): WrappedReceipt | null {
-        const [realReceipt, syntheticReceipt] = this.receipts[receiptType]?.[userId] ?? [];
+        const [realReceipt, syntheticReceipt] = this.receipts.get(receiptType)?.get(userId) ?? [null, null];
         if (ignoreSynthesized) {
             return realReceipt;
         }
@@ -81,41 +101,142 @@ export abstract class ReadReceipt<
         return syntheticReceipt ?? realReceipt;
     }
 
+    private compareReceipts(a: WrappedReceipt, b: WrappedReceipt): number {
+        // Try compare them in our unfiltered timeline set order, falling back to receipt timestamp which should be
+        // relatively sane as receipts are set only by the originating homeserver so as long as its clock doesn't
+        // jump around then it should be valid.
+        return this.getUnfilteredTimelineSet().compareEventOrdering(a.eventId, b.eventId) ?? a.data.ts - b.data.ts;
+    }
+
     /**
-     * Get the ID of the event that a given user has read up to, or null if we
-     * have received no read receipts from them.
+     * Get the ID of the event that a given user has read up to, or null if:
+     * - we have received no read receipts for them, or
+     * - the receipt we have points at an event we don't have, or
+     * - the thread ID in the receipt does not match the thread root of the
+     *   referenced event.
+     *
+     * (The event might not exist if it is not loaded, and the thread ID might
+     * not match if the event has moved thread because it was redacted.)
+     *
      * @param userId - The user ID to get read receipt event ID for
      * @param ignoreSynthesized - If true, return only receipts that have been
-     *                                    sent by the server, not implicit ones generated
-     *                                    by the JS SDK.
-     * @returns ID of the latest event that the given user has read, or null.
+     *                            sent by the server, not implicit ones generated
+     *                            by the JS SDK.
+     * @returns ID of the latest existing event that the given user has read, or null.
      */
     public getEventReadUpTo(userId: string, ignoreSynthesized = false): string | null {
+        // Find what the latest receipt says is the latest event we have read
+        const latestReceipt = this.getLatestReceipt(userId, ignoreSynthesized);
+
+        if (!latestReceipt) {
+            return null;
+        }
+
+        return this.receiptPointsAtConsistentEvent(latestReceipt) ? latestReceipt.eventId : null;
+    }
+
+    /**
+     * Returns true if the event pointed at by this receipt exists, and its
+     * threadRootId is consistent with the thread information in the receipt.
+     */
+    private receiptPointsAtConsistentEvent(receipt: WrappedReceipt): boolean {
+        const event = this.findEventById(receipt.eventId);
+        if (!event) {
+            // If the receipt points at a non-existent event, we have multiple
+            // possibilities:
+            //
+            // 1. We don't have the event because it's not loaded yet - probably
+            //    it's old and we're best off ignoring the receipt - we can just
+            //    send a new one when we read a new event.
+            //
+            // 2. We have a bug e.g. we misclassified this event into the wrong
+            //    thread.
+            //
+            // 3. The referenced event moved out of this thread (e.g. because it
+            //    was deleted.)
+            //
+            // 4. The receipt had the incorrect thread ID (due to a bug in a
+            // client, or malicious behaviour).
+
+            // This receipt is not "valid" because it doesn't point at an event
+            // we have. We want to pretend it doesn't exist.
+            return false;
+        }
+
+        if (!receipt.data?.thread_id) {
+            // If this is an unthreaded receipt, it could point at any event, so
+            // there is no need to validate further - this receipt is valid.
+            return true;
+        }
+        // Otherwise it is a threaded receipt...
+
+        if (receipt.data.thread_id === MAIN_ROOM_TIMELINE) {
+            // The receipt is for the main timeline: we check that the event is
+            // in the main timeline.
+
+            // Check if the event is in the main timeline
+            const eventIsInMainTimeline = inMainTimelineForReceipt(event);
+
+            if (eventIsInMainTimeline) {
+                // The receipt is for the main timeline, and so is the event, so
+                // the receipt is valid.
+                return true;
+            }
+        } else {
+            // The receipt is for a different thread (not the main timeline)
+
+            if (event.threadRootId === receipt.data.thread_id) {
+                // If the receipt and event agree on the thread ID, the receipt
+                // is valid.
+                return true;
+            }
+        }
+
+        // The receipt thread ID disagrees with the event thread ID. There are 2
+        // possibilities:
+        //
+        // 1. The event moved to a different thread after the receipt was
+        //    created. This can happen if the event was redacted because that
+        //    moves it to the main timeline.
+        //
+        // 2. There is a bug somewhere - either we put the event into the wrong
+        //    thread, or someone sent an incorrect receipt.
+        //
+        // In many cases, we won't get here because the call to findEventById
+        // would have already returned null. We include this check to cover
+        // cases when `this` is a  room, meaning findEventById will find events
+        // in any thread, and to be defensive against unforeseen code paths.
+        logger.warn(
+            `Ignoring receipt because its thread_id (${receipt.data.thread_id}) disagrees ` +
+                `with the thread root (${event.threadRootId}) of the referenced event ` +
+                `(event ID = ${receipt.eventId})`,
+        );
+
+        // This receipt is not "valid" because it disagrees with us about what
+        // thread the event is in. We want to pretend it doesn't exist.
+        return false;
+    }
+
+    private getLatestReceipt(userId: string, ignoreSynthesized: boolean): WrappedReceipt | null {
         // XXX: This is very very ugly and I hope I won't have to ever add a new
         // receipt type here again. IMHO this should be done by the server in
         // some more intelligent manner or the client should just use timestamps
 
-        const timelineSet = this.getUnfilteredTimelineSet();
         const publicReadReceipt = this.getReadReceiptForUserId(userId, ignoreSynthesized, ReceiptType.Read);
         const privateReadReceipt = this.getReadReceiptForUserId(userId, ignoreSynthesized, ReceiptType.ReadPrivate);
 
         // If we have both, compare them
         let comparison: number | null | undefined;
         if (publicReadReceipt?.eventId && privateReadReceipt?.eventId) {
-            comparison = timelineSet.compareEventOrdering(publicReadReceipt?.eventId, privateReadReceipt?.eventId);
-        }
-
-        // If we didn't get a comparison try to compare the ts of the receipts
-        if (!comparison && publicReadReceipt?.data?.ts && privateReadReceipt?.data?.ts) {
-            comparison = publicReadReceipt?.data?.ts - privateReadReceipt?.data?.ts;
+            comparison = this.compareReceipts(publicReadReceipt, privateReadReceipt);
         }
 
         // The public receipt is more likely to drift out of date so the private
         // one has precedence
-        if (!comparison) return privateReadReceipt?.eventId ?? publicReadReceipt?.eventId ?? null;
+        if (!comparison) return privateReadReceipt ?? publicReadReceipt ?? null;
 
         // If public read receipt is older, return the private one
-        return (comparison < 0 ? privateReadReceipt?.eventId : publicReadReceipt?.eventId) ?? null;
+        return (comparison < 0 ? privateReadReceipt : publicReadReceipt) ?? null;
     }
 
     public addReceiptToStructure(
@@ -125,33 +246,32 @@ export abstract class ReadReceipt<
         receipt: Receipt,
         synthetic: boolean,
     ): void {
-        if (!this.receipts[receiptType]) {
-            this.receipts[receiptType] = {};
-        }
-        if (!this.receipts[receiptType][userId]) {
-            this.receipts[receiptType][userId] = [null, null];
-        }
+        const receiptTypesMap = this.receipts.getOrCreate(receiptType);
+        let pair = receiptTypesMap.get(userId);
 
-        const pair = this.receipts[receiptType][userId];
+        if (!pair) {
+            pair = [null, null];
+            receiptTypesMap.set(userId, pair);
+        }
 
         let existingReceipt = pair[ReceiptPairRealIndex];
         if (synthetic) {
             existingReceipt = pair[ReceiptPairSyntheticIndex] ?? pair[ReceiptPairRealIndex];
         }
 
-        if (existingReceipt) {
-            // we only want to add this receipt if we think it is later than the one we already have.
-            // This is managed server-side, but because we synthesize RRs locally we have to do it here too.
-            const ordering = this.getUnfilteredTimelineSet().compareEventOrdering(existingReceipt.eventId, eventId);
-            if (ordering !== null && ordering >= 0) {
-                return;
-            }
-        }
-
         const wrappedReceipt: WrappedReceipt = {
             eventId,
             data: receipt,
         };
+
+        if (existingReceipt) {
+            // We only want to add this receipt if we think it is later than the one we already have.
+            // This is managed server-side, but because we synthesize RRs locally we have to do it here too.
+            const ordering = this.compareReceipts(existingReceipt, wrappedReceipt);
+            if (ordering >= 0) {
+                return;
+            }
+        }
 
         const realReceipt = synthetic ? pair[ReceiptPairRealIndex] : wrappedReceipt;
         const syntheticReceipt = synthetic ? wrappedReceipt : pair[ReceiptPairSyntheticIndex];
@@ -184,23 +304,26 @@ export abstract class ReadReceipt<
         if (cachedReceipt === newCachedReceipt) return;
 
         // clean up any previous cache entry
-        if (cachedReceipt && this.receiptCacheByEventId[cachedReceipt.eventId]) {
+        if (cachedReceipt && this.receiptCacheByEventId.get(cachedReceipt.eventId)) {
             const previousEventId = cachedReceipt.eventId;
             // Remove the receipt we're about to clobber out of existence from the cache
-            this.receiptCacheByEventId[previousEventId] = this.receiptCacheByEventId[previousEventId].filter((r) => {
-                return r.type !== receiptType || r.userId !== userId;
-            });
+            this.receiptCacheByEventId.set(
+                previousEventId,
+                this.receiptCacheByEventId.get(previousEventId)!.filter((r) => {
+                    return r.type !== receiptType || r.userId !== userId;
+                }),
+            );
 
-            if (this.receiptCacheByEventId[previousEventId].length < 1) {
-                delete this.receiptCacheByEventId[previousEventId]; // clean up the cache keys
+            if (this.receiptCacheByEventId.get(previousEventId)!.length < 1) {
+                this.receiptCacheByEventId.delete(previousEventId); // clean up the cache keys
             }
         }
 
         // cache the new one
-        if (!this.receiptCacheByEventId[eventId]) {
-            this.receiptCacheByEventId[eventId] = [];
+        if (!this.receiptCacheByEventId.get(eventId)) {
+            this.receiptCacheByEventId.set(eventId, []);
         }
-        this.receiptCacheByEventId[eventId].push({
+        this.receiptCacheByEventId.get(eventId)!.push({
             userId: userId,
             type: receiptType as ReceiptType,
             data: receipt,
@@ -214,10 +337,40 @@ export abstract class ReadReceipt<
      * an empty list.
      */
     public getReceiptsForEvent(event: MatrixEvent): CachedReceipt[] {
-        return this.receiptCacheByEventId[event.getId()!] || [];
+        return this.receiptCacheByEventId.get(event.getId()!) || [];
     }
 
     public abstract addReceipt(event: MatrixEvent, synthetic: boolean): void;
+
+    public abstract setUnread(type: NotificationCountType, count: number): void;
+
+    /**
+     * Look in this room/thread's timeline to find an event. If `this` is a
+     * room, we look in all threads, but if `this` is a thread, we look only
+     * inside this thread.
+     */
+    public abstract findEventById(eventId: string): MatrixEvent | undefined;
+
+    /**
+     * This issue should also be addressed on synapse's side and is tracked as part
+     * of https://github.com/matrix-org/synapse/issues/14837
+     *
+     * Retrieves the read receipt for the logged in user and checks if it matches
+     * the last event in the room and whether that event originated from the logged
+     * in user.
+     * Under those conditions we can consider the context as read. This is useful
+     * because we never send read receipts against our own events
+     * @param userId - the logged in user
+     */
+    public fixupNotifications(userId: string): void {
+        const receipt = this.getReadReceiptForUserId(userId, false);
+
+        const lastEvent = this.timeline[this.timeline.length - 1];
+        if (lastEvent && receipt?.eventId === lastEvent.getId() && userId === lastEvent.getSender()) {
+            this.setUnread(NotificationCountType.Total, 0);
+            this.setUnread(NotificationCountType.Highlight, 0);
+        }
+    }
 
     /**
      * Add a temporary local-echo receipt to the room to reflect in the
@@ -225,9 +378,10 @@ export abstract class ReadReceipt<
      * @param userId - The user ID if the receipt sender
      * @param e - The event that is to be acknowledged
      * @param receiptType - The type of receipt
+     * @param unthreaded - the receipt is unthreaded
      */
-    public addLocalEchoReceipt(userId: string, e: MatrixEvent, receiptType: ReceiptType): void {
-        this.addReceipt(synthesizeReceipt(userId, e, receiptType), true);
+    public addLocalEchoReceipt(userId: string, e: MatrixEvent, receiptType: ReceiptType, unthreaded = false): void {
+        this.addReceipt(synthesizeReceipt(userId, e, receiptType, unthreaded), true);
     }
 
     /**
@@ -238,7 +392,7 @@ export abstract class ReadReceipt<
     public getUsersReadUpTo(event: MatrixEvent): string[] {
         return this.getReceiptsForEvent(event)
             .filter(function (receipt) {
-                return utils.isSupportedReceiptType(receipt.type);
+                return isSupportedReceiptType(receipt.type);
             })
             .map(function (receipt) {
                 return receipt.userId;
@@ -253,31 +407,16 @@ export abstract class ReadReceipt<
      * @param eventId - The event ID to check if the user read.
      * @returns True if the user has read the event, false otherwise.
      */
-    public hasUserReadEvent(userId: string, eventId: string): boolean {
-        const readUpToId = this.getEventReadUpTo(userId, false);
-        if (readUpToId === eventId) return true;
+    public abstract hasUserReadEvent(userId: string, eventId: string): boolean;
 
-        if (
-            this.timeline?.length &&
-            this.timeline[this.timeline.length - 1].getSender() &&
-            this.timeline[this.timeline.length - 1].getSender() === userId
-        ) {
-            // It doesn't matter where the event is in the timeline, the user has read
-            // it because they've sent the latest event.
-            return true;
-        }
-
-        for (let i = this.timeline?.length - 1; i >= 0; --i) {
-            const ev = this.timeline[i];
-
-            // If we encounter the target event first, the user hasn't read it
-            // however if we encounter the readUpToId first then the user has read
-            // it. These rules apply because we're iterating bottom-up.
-            if (ev.getId() === eventId) return false;
-            if (ev.getId() === readUpToId) return true;
-        }
-
-        // We don't know if the user has read it, so assume not.
-        return false;
-    }
+    /**
+     * Returns the most recent unthreaded receipt for a given user
+     * @param userId - the MxID of the User
+     * @returns an unthreaded Receipt. Can be undefined if receipts have been disabled
+     * or a user chooses to use private read receipts (or we have simply not received
+     * a receipt from this user yet).
+     *
+     * @deprecated use `hasUserReadEvent` or `getEventReadUpTo` instead
+     */
+    public abstract getLastUnthreadedReceiptFor(userId: string): Receipt | undefined;
 }

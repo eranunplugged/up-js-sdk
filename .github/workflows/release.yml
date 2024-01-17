@@ -1,59 +1,76 @@
 name: Release Process
 on:
-    release:
-        types: [published]
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+    workflow_dispatch:
+        inputs:
+            mode:
+                description: What type of release
+                required: true
+                default: rc
+                type: choice
+                options:
+                    - rc
+                    - final
+            docs:
+                description: Publish docs
+                required: true
+                type: boolean
+                default: true
+            npm:
+                description: Publish to npm
+                required: true
+                type: boolean
+                default: true
+concurrency: ${{ github.workflow }}
 jobs:
-    jsdoc:
+    release:
+        uses: matrix-org/matrix-js-sdk/.github/workflows/release-make.yml@develop
+        secrets: inherit
+        with:
+            final: ${{ inputs.mode == 'final' }}
+            npm: ${{ inputs.npm }}
+
+    docs:
         name: Publish Documentation
+        needs: release
+        if: inputs.docs
         runs-on: ubuntu-latest
         steps:
             - name: 🧮 Checkout code
-              uses: actions/checkout@v3
+              uses: actions/checkout@v4
+
+            - name: 🧮 Checkout gh-pages
+              uses: actions/checkout@v4
+              with:
+                  ref: gh-pages
+                  path: _docs
 
             - name: 🔧 Yarn cache
-              uses: actions/setup-node@v3
+              uses: actions/setup-node@v4
               with:
                   cache: "yarn"
 
             - name: 🔨 Install dependencies
-              run: "yarn install --pure-lockfile"
+              run: "yarn install --frozen-lockfile"
 
-            - name: 📖 Generate JSDoc
-              run: "yarn gendoc"
-
-            - name: 📋 Copy to temp
+            - name: 🔨 Install symlinks
               run: |
-                  cp -a "./_docs" "$RUNNER_TEMP/"
+                  sudo apt-get update
+                  sudo apt-get install -y symlinks
 
-            - name: 🧮 Checkout gh-pages
-              uses: actions/checkout@v3
-              with:
-                  ref: gh-pages
-
-            - name: 🔪 Prepare
-              env:
-                  GITHUB_REF_NAME: ${{ github.ref_name }}
+            - name: 📖 Generate docs
               run: |
-                  VERSION="${GITHUB_REF_NAME#v}"
-                  [ ! -e "$VERSION" ] || rm -r $VERSION
-                  cp -r $RUNNER_TEMP/_docs/ $VERSION
+                  yarn tpv purge --yes --out _docs --stale --major 10
+                  yarn gendoc
+                  symlinks -rc _docs
 
-                  # Add the new directory to the index if it isn't there already
-                  if ! grep -q ">Version $VERSION</a>" index.html; then
-                    perl -i -pe 'BEGIN {$rel=shift} $_ =~ /^<\/ul>/ && print
-                      "<li><a href=\"${rel}/index.html\">Version ${rel}</a></li>\n"' "$VERSION" index.html
-                  fi
+            - name: 🔨 Set up git
+              run: |
+                  git config --global user.email "releases@riot.im"
+                  git config --global user.name "RiotRobot"
 
             - name: 🚀 Deploy
-              uses: peaceiris/actions-gh-pages@v3
-              with:
-                  github_token: ${{ secrets.GITHUB_TOKEN }}
-                  keep_files: true
-                  publish_dir: .
-
-    npm:
-        name: Publish
-        uses: matrix-org/matrix-js-sdk/.github/workflows/release-npm.yml@develop
-        secrets:
-            NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+              run: |
+                  git add . --all
+                  git commit -m "Update docs"
+                  git push
+              working-directory: _docs

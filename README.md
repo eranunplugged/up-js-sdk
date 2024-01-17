@@ -11,6 +11,8 @@
 This is the [Matrix](https://matrix.org) Client-Server SDK for JavaScript and TypeScript. This SDK can be run in a
 browser or in Node.js.
 
+#### Minimum Matrix server version: v1.1
+
 The Matrix specification is constantly evolving - while this SDK aims for maximum backwards compatibility, it only
 guarantees that a feature will be supported for at least 4 spec releases. For example, if a feature the js-sdk supports
 is removed in v1.4 then the feature is _eligible_ for removal from the SDK when v1.8 is released. This SDK has no
@@ -21,17 +23,7 @@ endpoints from before Matrix 1.1, for example.
 
 ## In a browser
 
-Download the browser version from
-https://github.com/matrix-org/matrix-js-sdk/releases/latest and add that as a
-`<script>` to your page. There will be a global variable `matrixcs`
-attached to `window` through which you can access the SDK. See below for how to
-include libolm to enable end-to-end-encryption.
-
-The browser bundle supports recent versions of browsers. Typically this is ES2015
-or `> 0.5%, last 2 versions, Firefox ESR, not dead` if using
-[browserlists](https://github.com/browserslist/browserslist).
-
-Please check [the working browser example](examples/browser) for more information.
+### Note, the browserify build has been removed. Please use a bundler like webpack or vite instead.
 
 ## In Node.js
 
@@ -54,6 +46,8 @@ client.publicRooms(function (err, data) {
 
 See below for how to include libolm to enable end-to-end-encryption. Please check
 [the Node.js terminal app](examples/node) for a more complex example.
+
+You can also use the sdk with [Deno](https://deno.land/) (`import npm:matrix-js-sdk`) but its not officialy supported.
 
 To start the client:
 
@@ -357,7 +351,7 @@ First, you need to pull in the right build tools:
 
 ## Building
 
-To build a browser version from scratch when developing::
+To build a browser version from scratch when developing:
 
 ```
  $ yarn build
@@ -368,9 +362,6 @@ To run tests (Jest):
 ```
  $ yarn test
 ```
-
-> **Note**
-> The `sync-browserify.spec.ts` requires a browser build (`yarn build`) in order to pass
 
 To run linting:
 

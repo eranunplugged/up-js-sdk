@@ -44,7 +44,11 @@ export enum IdentityPrefix {
 
 export enum MediaPrefix {
     /**
-     * URI path for the media repo API
+     * A constant representing the URI path for Client-Server API Media endpoints versioned at v1.
      */
-    R0 = "/_matrix/media/r0",
+    V1 = "/_matrix/media/v3",
+    /**
+     * A constant representing the URI path for Client-Server API Media endpoints versioned at v3.
+     */
+    V3 = "/_matrix/media/v3",
 }
