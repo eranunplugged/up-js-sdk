@@ -23,14 +23,20 @@ import {
     RoomMessageRequest,
     SignatureUploadRequest,
     ToDeviceRequest,
-} from "@matrix-org/matrix-sdk-crypto-js";
+    UploadSigningKeysRequest,
+} from "@matrix-org/matrix-sdk-crypto-wasm";
 
 import { logger } from "../logger";
 import { IHttpOpts, MatrixHttpApi, Method } from "../http-api";
 import { QueryDict } from "../utils";
+import { IAuthDict, UIAuthCallback } from "../interactive-auth";
+import { UIAResponse } from "../@types/uia";
+import { ToDeviceMessageId } from "../@types/event";
 
 /**
  * Common interface for all the request types returned by `OlmMachine.outgoingRequests`.
+ *
+ * @internal
  */
 export interface OutgoingRequest {
     readonly id: string | undefined;
@@ -46,6 +52,8 @@ export interface OutgoingRequest {
  *   * holding the reference to the `MatrixHttpApi`
  *   * turning `OutgoingRequest`s from the rust backend into HTTP requests, and sending them
  *   * sending the results of such requests back to the rust backend.
+ *
+ * @internal
  */
 export class OutgoingRequestProcessor {
     public constructor(
@@ -53,7 +61,10 @@ export class OutgoingRequestProcessor {
         private readonly http: MatrixHttpApi<IHttpOpts & { onlyData: true }>,
     ) {}
 
-    public async makeOutgoingRequest(msg: OutgoingRequest): Promise<void> {
+    public async makeOutgoingRequest<T>(
+        msg: OutgoingRequest | UploadSigningKeysRequest,
+        uiaCallback?: UIAuthCallback<T>,
+    ): Promise<void> {
         let resp: string;
 
         /* refer https://docs.rs/matrix-sdk-crypto/0.6.0/matrix_sdk_crypto/requests/enum.OutgoingRequests.html
@@ -68,25 +79,105 @@ export class OutgoingRequestProcessor {
         } else if (msg instanceof SignatureUploadRequest) {
             resp = await this.rawJsonRequest(Method.Post, "/_matrix/client/v3/keys/signatures/upload", {}, msg.body);
         } else if (msg instanceof KeysBackupRequest) {
-            resp = await this.rawJsonRequest(Method.Put, "/_matrix/client/v3/room_keys/keys", {}, msg.body);
+            resp = await this.rawJsonRequest(
+                Method.Put,
+                "/_matrix/client/v3/room_keys/keys",
+                { version: msg.version },
+                msg.body,
+            );
         } else if (msg instanceof ToDeviceRequest) {
-            const path =
-                `/_matrix/client/v3/sendToDevice/${encodeURIComponent(msg.event_type)}/` +
-                encodeURIComponent(msg.txn_id);
-            resp = await this.rawJsonRequest(Method.Put, path, {}, msg.body);
+            resp = await this.sendToDeviceRequest(msg);
         } else if (msg instanceof RoomMessageRequest) {
             const path =
-                `/_matrix/client/v3/room/${encodeURIComponent(msg.room_id)}/send/` +
+                `/_matrix/client/v3/rooms/${encodeURIComponent(msg.room_id)}/send/` +
                 `${encodeURIComponent(msg.event_type)}/${encodeURIComponent(msg.txn_id)}`;
             resp = await this.rawJsonRequest(Method.Put, path, {}, msg.body);
+        } else if (msg instanceof UploadSigningKeysRequest) {
+            await this.makeRequestWithUIA(
+                Method.Post,
+                "/_matrix/client/v3/keys/device_signing/upload",
+                {},
+                msg.body,
+                uiaCallback,
+            );
+            // SigningKeysUploadRequest does not implement OutgoingRequest and does not need to be marked as sent.
+            return;
         } else {
             logger.warn("Unsupported outgoing message", Object.getPrototypeOf(msg));
             resp = "";
         }
 
         if (msg.id) {
-            await this.olmMachine.markRequestAsSent(msg.id, msg.type, resp);
+            try {
+                await this.olmMachine.markRequestAsSent(msg.id, msg.type, resp);
+            } catch (e) {
+                // Ignore errors which are caused by the olmMachine having been freed. The exact error message depends
+                // on whether we are using a release or develop build of rust-sdk-crypto-wasm.
+                if (
+                    e instanceof Error &&
+                    (e.message === "Attempt to use a moved value" || e.message === "null pointer passed to rust")
+                ) {
+                    logger.log(`Ignoring error '${e.message}': client is likely shutting down`);
+                } else {
+                    throw e;
+                }
+            }
         }
+    }
+
+    /**
+     * Send the HTTP request for a `ToDeviceRequest`
+     *
+     * @param request - request to send
+     * @returns JSON-serialized body of the response, if successful
+     */
+    private async sendToDeviceRequest(request: ToDeviceRequest): Promise<string> {
+        // a bit of extra logging, to help trace to-device messages through the system
+        const parsedBody: { messages: Record<string, Record<string, Record<string, any>>> } = JSON.parse(request.body);
+
+        const messageList = [];
+        for (const [userId, perUserMessages] of Object.entries(parsedBody.messages)) {
+            for (const [deviceId, message] of Object.entries(perUserMessages)) {
+                messageList.push(`${userId}/${deviceId} (msgid ${message[ToDeviceMessageId]})`);
+            }
+        }
+
+        logger.info(
+            `Sending batch of to-device messages. type=${request.event_type} txnid=${request.txn_id}`,
+            messageList,
+        );
+
+        const path =
+            `/_matrix/client/v3/sendToDevice/${encodeURIComponent(request.event_type)}/` +
+            encodeURIComponent(request.txn_id);
+        return await this.rawJsonRequest(Method.Put, path, {}, request.body);
+    }
+
+    private async makeRequestWithUIA<T>(
+        method: Method,
+        path: string,
+        queryParams: QueryDict,
+        body: string,
+        uiaCallback: UIAuthCallback<T> | undefined,
+    ): Promise<string> {
+        if (!uiaCallback) {
+            return await this.rawJsonRequest(method, path, queryParams, body);
+        }
+
+        const parsedBody = JSON.parse(body);
+        const makeRequest = async (auth: IAuthDict | null): Promise<UIAResponse<T>> => {
+            const newBody: Record<string, any> = {
+                ...parsedBody,
+            };
+            if (auth !== null) {
+                newBody.auth = auth;
+            }
+            const resp = await this.rawJsonRequest(method, path, queryParams, JSON.stringify(newBody));
+            return JSON.parse(resp) as T;
+        };
+
+        const resp = await uiaCallback(makeRequest);
+        return JSON.stringify(resp);
     }
 
     private async rawJsonRequest(method: Method, path: string, queryParams: QueryDict, body: string): Promise<string> {
@@ -104,13 +195,6 @@ export class OutgoingRequestProcessor {
             prefix: "",
         };
 
-        try {
-            const response = await this.http.authedRequest<string>(method, path, queryParams, body, opts);
-            logger.info(`rust-crypto: successfully made HTTP request: ${method} ${path}`);
-            return response;
-        } catch (e) {
-            logger.warn(`rust-crypto: error making HTTP request: ${method} ${path}: ${e}`);
-            throw e;
-        }
+        return await this.http.authedRequest<string>(method, path, queryParams, body, opts);
     }
 }

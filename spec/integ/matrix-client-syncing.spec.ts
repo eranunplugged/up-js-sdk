@@ -36,11 +36,16 @@ import {
     NotificationCountType,
     IEphemeral,
     Room,
+    IndexedDBStore,
+    RelationType,
+    EventType,
 } from "../../src";
 import { ReceiptType } from "../../src/@types/read_receipts";
 import { UNREAD_THREAD_NOTIFICATIONS } from "../../src/@types/sync";
 import * as utils from "../test-utils/test-utils";
 import { TestClient } from "../TestClient";
+import { emitPromise, mkEvent, mkMessage } from "../test-utils/test-utils";
+import { THREAD_RELATION_TYPE } from "../../src/models/thread";
 
 describe("MatrixClient syncing", () => {
     const selfUserId = "@alice:localhost";
@@ -81,17 +86,15 @@ describe("MatrixClient syncing", () => {
             presence: {},
         };
 
-        it("should /sync after /pushrules and /filter.", (done) => {
+        it("should /sync after /pushrules and /filter.", async () => {
             httpBackend!.when("GET", "/sync").respond(200, syncData);
 
             client!.startClient();
 
-            httpBackend!.flushAllExpected().then(() => {
-                done();
-            });
+            await httpBackend!.flushAllExpected();
         });
 
-        it("should pass the 'next_batch' token from /sync to the since= param  of the next /sync", (done) => {
+        it("should pass the 'next_batch' token from /sync to the since= param  of the next /sync", async () => {
             httpBackend!.when("GET", "/sync").respond(200, syncData);
             httpBackend!
                 .when("GET", "/sync")
@@ -102,9 +105,7 @@ describe("MatrixClient syncing", () => {
 
             client!.startClient();
 
-            httpBackend!.flushAllExpected().then(() => {
-                done();
-            });
+            await httpBackend!.flushAllExpected();
         });
 
         it("should emit RoomEvent.MyMembership for invite->leave->invite cycles", async () => {
@@ -222,9 +223,122 @@ describe("MatrixClient syncing", () => {
             expect(fires).toBe(3);
         });
 
-        it("should honour lazyLoadMembers if user is not a guest", () => {
-            client!.doesServerSupportLazyLoading = jest.fn().mockResolvedValue(true);
+        it("should emit RoomEvent.MyMembership for knock->leave->knock cycles", async () => {
+            await client!.initCrypto();
 
+            const roomId = "!cycles:example.org";
+
+            // First sync: an knock
+            const knockSyncRoomSection = {
+                knock: {
+                    [roomId]: {
+                        knock_state: {
+                            events: [
+                                {
+                                    type: "m.room.member",
+                                    state_key: selfUserId,
+                                    content: {
+                                        membership: "knock",
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                },
+            };
+            httpBackend!.when("GET", "/sync").respond(200, {
+                ...syncData,
+                rooms: knockSyncRoomSection,
+            });
+
+            // Second sync: a leave (reject of some kind)
+            httpBackend!.when("POST", "/leave").respond(200, {});
+            httpBackend!.when("GET", "/sync").respond(200, {
+                ...syncData,
+                rooms: {
+                    leave: {
+                        [roomId]: {
+                            account_data: { events: [] },
+                            ephemeral: { events: [] },
+                            state: {
+                                events: [
+                                    {
+                                        type: "m.room.member",
+                                        state_key: selfUserId,
+                                        content: {
+                                            membership: "leave",
+                                        },
+                                        prev_content: {
+                                            membership: "knock",
+                                        },
+                                        // XXX: And other fields required on an event
+                                    },
+                                ],
+                            },
+                            timeline: {
+                                limited: false,
+                                events: [
+                                    {
+                                        type: "m.room.member",
+                                        state_key: selfUserId,
+                                        content: {
+                                            membership: "leave",
+                                        },
+                                        prev_content: {
+                                            membership: "knock",
+                                        },
+                                        // XXX: And other fields required on an event
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            });
+
+            // Third sync: another knock
+            httpBackend!.when("GET", "/sync").respond(200, {
+                ...syncData,
+                rooms: knockSyncRoomSection,
+            });
+
+            // First fire: an initial knock
+            let fires = 0;
+            client!.once(RoomEvent.MyMembership, (room, membership, oldMembership) => {
+                // Room, string, string
+                fires++;
+                expect(room.roomId).toBe(roomId);
+                expect(membership).toBe("knock");
+                expect(oldMembership).toBeFalsy();
+
+                // Second fire: a leave
+                client!.once(RoomEvent.MyMembership, (room, membership, oldMembership) => {
+                    fires++;
+                    expect(room.roomId).toBe(roomId);
+                    expect(membership).toBe("leave");
+                    expect(oldMembership).toBe("knock");
+
+                    // Third/final fire: a second knock
+                    client!.once(RoomEvent.MyMembership, (room, membership, oldMembership) => {
+                        fires++;
+                        expect(room.roomId).toBe(roomId);
+                        expect(membership).toBe("knock");
+                        expect(oldMembership).toBe("leave");
+                    });
+                });
+
+                // For maximum safety, "leave" the room after we register the handler
+                client!.leave(roomId);
+            });
+
+            // noinspection ES6MissingAwait
+            client!.startClient();
+            await httpBackend!.flushAllExpected();
+
+            expect(fires).toBe(3);
+        });
+
+        it("should honour lazyLoadMembers if user is not a guest", () => {
             httpBackend!
                 .when("GET", "/sync")
                 .check((req) => {
@@ -241,8 +355,6 @@ describe("MatrixClient syncing", () => {
         it("should not honour lazyLoadMembers if user is a guest", () => {
             httpBackend!.expectedRequests = [];
             httpBackend!.when("GET", "/versions").respond(200, {});
-            client!.doesServerSupportLazyLoading = jest.fn().mockResolvedValue(true);
-
             httpBackend!
                 .when("GET", "/sync")
                 .check((req) => {
@@ -283,6 +395,46 @@ describe("MatrixClient syncing", () => {
             });
 
             // First fire: an initial invite
+            let fires = 0;
+            client!.once(ClientEvent.Room, (room) => {
+                fires++;
+                expect(room.roomId).toBe(roomId);
+            });
+
+            // noinspection ES6MissingAwait
+            client!.startClient();
+            await httpBackend!.flushAllExpected();
+
+            expect(fires).toBe(1);
+        });
+
+        it("should emit ClientEvent.Room when knocked while crypto is disabled", async () => {
+            const roomId = "!knock:example.org";
+
+            // First sync: a knock
+            const knockSyncRoomSection = {
+                knock: {
+                    [roomId]: {
+                        knock_state: {
+                            events: [
+                                {
+                                    type: "m.room.member",
+                                    state_key: selfUserId,
+                                    content: {
+                                        membership: "knock",
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                },
+            };
+            httpBackend!.when("GET", "/sync").respond(200, {
+                ...syncData,
+                rooms: knockSyncRoomSection,
+            });
+
+            // First fire: an initial knock
             let fires = 0;
             client!.once(ClientEvent.Room, (room) => {
                 fires++;
@@ -361,6 +513,7 @@ describe("MatrixClient syncing", () => {
                 join: {},
                 invite: {},
                 leave: {},
+                knock: {},
             },
         };
 
@@ -392,9 +545,7 @@ describe("MatrixClient syncing", () => {
                             type: "m.room.create",
                             room: roomOne,
                             user: selfUserId,
-                            content: {
-                                creator: selfUserId,
-                            },
+                            content: {},
                         }),
                     ],
                 },
@@ -580,9 +731,7 @@ describe("MatrixClient syncing", () => {
                                     type: "m.room.create",
                                     room: roomOne,
                                     user: selfUserId,
-                                    content: {
-                                        creator: selfUserId,
-                                    },
+                                    content: {},
                                 }),
                             ],
                         },
@@ -614,9 +763,7 @@ describe("MatrixClient syncing", () => {
                                     type: "m.room.create",
                                     room: roomTwo,
                                     user: selfUserId,
-                                    content: {
-                                        creator: selfUserId,
-                                    },
+                                    content: {},
                                 }),
                             ],
                         },
@@ -724,7 +871,7 @@ describe("MatrixClient syncing", () => {
         // events that arrive in the incremental sync as if they preceeded the
         // timeline events, however this breaks peeking, so it's disabled
         // (see sync.js)
-        xit("should correctly interpret state in incremental sync.", () => {
+        it.skip("should correctly interpret state in incremental sync.", () => {
             httpBackend!.when("GET", "/sync").respond(200, syncData);
             httpBackend!.when("GET", "/sync").respond(200, nextSyncData);
 
@@ -741,9 +888,9 @@ describe("MatrixClient syncing", () => {
             });
         });
 
-        xit("should update power levels for users in a room", () => {});
+        it.skip("should update power levels for users in a room", () => {});
 
-        xit("should update the room topic", () => {});
+        it.skip("should update the room topic", () => {});
 
         describe("onMarkerStateEvent", () => {
             const normalMessageEvent = utils.mkMessage({
@@ -761,7 +908,6 @@ describe("MatrixClient syncing", () => {
                         room: roomOne,
                         user: otherUserId,
                         content: {
-                            creator: otherUserId,
                             room_version: "9",
                         },
                     });
@@ -840,13 +986,13 @@ describe("MatrixClient syncing", () => {
                     roomVersion: "org.matrix.msc2716v3",
                 },
             ].forEach((testMeta) => {
+                // eslint-disable-next-line jest/valid-title
                 describe(testMeta.label, () => {
                     const roomCreateEvent = utils.mkEvent({
                         type: "m.room.create",
                         room: roomOne,
                         user: otherUserId,
                         content: {
-                            creator: otherUserId,
                             room_version: testMeta.roomVersion,
                         },
                     });
@@ -1374,9 +1520,7 @@ describe("MatrixClient syncing", () => {
                                     type: "m.room.create",
                                     room: roomOne,
                                     user: selfUserId,
-                                    content: {
-                                        creator: selfUserId,
-                                    },
+                                    content: {},
                                 }),
                             ],
                         } as Partial<IJoinedRoom>,
@@ -1473,9 +1617,7 @@ describe("MatrixClient syncing", () => {
                                     type: "m.room.create",
                                     room: roomOne,
                                     user: selfUserId,
-                                    content: {
-                                        creator: selfUserId,
-                                    },
+                                    content: {},
                                 }),
                             ],
                         },
@@ -1589,30 +1731,87 @@ describe("MatrixClient syncing", () => {
                 });
             });
         });
+
+        it("should apply encrypted notification logic for events within the same sync blob", async () => {
+            const roomId = "!room123:server";
+            const syncData = {
+                rooms: {
+                    join: {
+                        [roomId]: {
+                            ephemeral: {
+                                events: [],
+                            },
+                            timeline: {
+                                events: [
+                                    utils.mkEvent({
+                                        room: roomId,
+                                        event: true,
+                                        skey: "",
+                                        type: EventType.RoomEncryption,
+                                        content: {},
+                                    }),
+                                    utils.mkMessage({
+                                        room: roomId,
+                                        user: otherUserId,
+                                        msg: "hello",
+                                    }),
+                                ],
+                            },
+                            state: {
+                                events: [
+                                    utils.mkMembership({
+                                        room: roomId,
+                                        mship: "join",
+                                        user: otherUserId,
+                                    }),
+                                    utils.mkMembership({
+                                        room: roomId,
+                                        mship: "join",
+                                        user: selfUserId,
+                                    }),
+                                    utils.mkEvent({
+                                        type: "m.room.create",
+                                        room: roomId,
+                                        user: selfUserId,
+                                        content: {},
+                                    }),
+                                ],
+                            },
+                        },
+                    },
+                },
+            } as unknown as ISyncResponse;
+
+            httpBackend!.when("GET", "/sync").respond(200, syncData);
+            client!.startClient();
+
+            await Promise.all([httpBackend!.flushAllExpected(), awaitSyncEvent()]);
+
+            const room = client!.getRoom(roomId)!;
+            expect(room).toBeInstanceOf(Room);
+            expect(room.getRoomUnreadNotificationCount(NotificationCountType.Total)).toBe(0);
+        });
     });
 
     describe("of a room", () => {
-        xit(
+        it.skip(
             "should sync when a join event (which changes state) for the user" +
                 " arrives down the event stream (e.g. join from another device)",
             () => {},
         );
 
-        xit("should sync when the user explicitly calls joinRoom", () => {});
+        it.skip("should sync when the user explicitly calls joinRoom", () => {});
     });
 
     describe("syncLeftRooms", () => {
-        beforeEach((done) => {
+        beforeEach(async () => {
             client!.startClient();
 
-            httpBackend!.flushAllExpected().then(() => {
-                // the /sync call from syncLeftRooms ends up in the request
-                // queue behind the call from the running client; add a response
-                // to flush the client's one out.
-                httpBackend!.when("GET", "/sync").respond(200, {});
-
-                done();
-            });
+            await httpBackend!.flushAllExpected();
+            // the /sync call from syncLeftRooms ends up in the request
+            // queue behind the call from the running client; add a response
+            // to flush the client's one out.
+            await httpBackend!.when("GET", "/sync").respond(200, {});
         });
 
         it("should create and use an appropriate filter", () => {
@@ -1872,5 +2071,125 @@ describe("MatrixClient syncing (IndexedDB version)", () => {
         idbHttpBackend.verifyNoOutstandingExpectation();
         idbClient.stopClient();
         idbHttpBackend.stop();
+    });
+
+    it("should query server for which thread a 2nd order relation belongs to and stash in sync accumulator", async () => {
+        const roomId = "!room:example.org";
+
+        async function startClient(client: MatrixClient): Promise<void> {
+            await Promise.all([
+                idbClient.startClient({
+                    // Without this all events just go into the main timeline
+                    threadSupport: true,
+                }),
+                idbHttpBackend.flushAllExpected(),
+                emitPromise(idbClient, ClientEvent.Room),
+            ]);
+        }
+
+        function assertEventsExpected(client: MatrixClient): void {
+            const room = client.getRoom(roomId);
+            const mainTimelineEvents = room!.getLiveTimeline().getEvents();
+            expect(mainTimelineEvents).toHaveLength(1);
+            expect(mainTimelineEvents[0].getContent().body).toEqual("Test");
+
+            const thread = room!.getThread("$someThreadId")!;
+            expect(thread.replayEvents).toHaveLength(1);
+            expect(thread.replayEvents![0].getRelation()!.key).toEqual("🪿");
+        }
+
+        let idbTestClient = new TestClient(selfUserId, "DEVICE", selfAccessToken, undefined, {
+            store: new IndexedDBStore({
+                indexedDB: global.indexedDB,
+                dbName: "test",
+            }),
+        });
+        let idbHttpBackend = idbTestClient.httpBackend;
+        let idbClient = idbTestClient.client;
+        await idbClient.store.startup();
+
+        idbHttpBackend.when("GET", "/versions").respond(200, { versions: ["v1.4"] });
+        idbHttpBackend.when("GET", "/pushrules/").respond(200, {});
+        idbHttpBackend.when("POST", "/filter").respond(200, { filter_id: "a filter id" });
+
+        const syncRoomSection = {
+            join: {
+                [roomId]: {
+                    timeline: {
+                        prev_batch: "foo",
+                        events: [
+                            mkMessage({
+                                room: roomId,
+                                user: selfUserId,
+                                msg: "Test",
+                            }),
+                            mkEvent({
+                                room: roomId,
+                                user: selfUserId,
+                                content: {
+                                    "m.relates_to": {
+                                        rel_type: RelationType.Annotation,
+                                        event_id: "$someUnknownEvent",
+                                        key: "🪿",
+                                    },
+                                },
+                                type: "m.reaction",
+                            }),
+                        ],
+                    },
+                },
+            },
+        };
+        idbHttpBackend.when("GET", "/sync").respond(200, {
+            ...syncData,
+            rooms: syncRoomSection,
+        });
+        idbHttpBackend.when("GET", `/rooms/${encodeURIComponent(roomId)}/event/%24someUnknownEvent`).respond(
+            200,
+            mkEvent({
+                room: roomId,
+                user: selfUserId,
+                content: {
+                    "body": "Thread response",
+                    "m.relates_to": {
+                        rel_type: THREAD_RELATION_TYPE.name,
+                        event_id: "$someThreadId",
+                    },
+                },
+                type: "m.room.message",
+            }),
+        );
+
+        await startClient(idbClient);
+        assertEventsExpected(idbClient);
+
+        idbHttpBackend.verifyNoOutstandingExpectation();
+        // Force sync accumulator to persist, reset client, assert it doesn't re-fetch event on next start-up
+        await idbClient.store.save(true);
+        await idbClient.stopClient();
+        await idbClient.store.destroy();
+        await idbHttpBackend.stop();
+
+        idbTestClient = new TestClient(selfUserId, "DEVICE", selfAccessToken, undefined, {
+            store: new IndexedDBStore({
+                indexedDB: global.indexedDB,
+                dbName: "test",
+            }),
+        });
+        idbHttpBackend = idbTestClient.httpBackend;
+        idbClient = idbTestClient.client;
+        await idbClient.store.startup();
+
+        idbHttpBackend.when("GET", "/versions").respond(200, { versions: ["v1.4"] });
+        idbHttpBackend.when("GET", "/pushrules/").respond(200, {});
+        idbHttpBackend.when("POST", "/filter").respond(200, { filter_id: "a filter id" });
+        idbHttpBackend.when("GET", "/sync").respond(200, syncData);
+
+        await startClient(idbClient);
+        assertEventsExpected(idbClient);
+
+        idbHttpBackend.verifyNoOutstandingExpectation();
+        await idbClient.stopClient();
+        await idbHttpBackend.stop();
     });
 });

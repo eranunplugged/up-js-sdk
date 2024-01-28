@@ -14,15 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-import * as RustSdkCryptoJs from "@matrix-org/matrix-sdk-crypto-js";
+import * as RustSdkCryptoJs from "@matrix-org/matrix-sdk-crypto-wasm";
 import fetchMock from "fetch-mock-jest";
 import { Mocked } from "jest-mock";
-import { KeysClaimRequest, UserId } from "@matrix-org/matrix-sdk-crypto-js";
+import { KeysClaimRequest, UserId } from "@matrix-org/matrix-sdk-crypto-wasm";
 
 import { OutgoingRequestProcessor } from "../../../src/rust-crypto/OutgoingRequestProcessor";
 import { KeyClaimManager } from "../../../src/rust-crypto/KeyClaimManager";
 import { TypedEventEmitter } from "../../../src/models/typed-event-emitter";
 import { HttpApiEvent, HttpApiEventHandlerMap, MatrixHttpApi } from "../../../src";
+import { logger, LogSpan } from "../../../src/logger";
 
 afterEach(() => {
     fetchMock.mockReset();
@@ -93,7 +94,7 @@ describe("KeyClaimManager", () => {
         olmMachine.markRequestAsSent.mockResolvedValueOnce(undefined);
 
         // fire off the request
-        await keyClaimManager.ensureSessionsForUsers([u1, u2]);
+        await keyClaimManager.ensureSessionsForUsers(new LogSpan(logger, "test"), [u1, u2]);
 
         // check that all the calls were made
         expect(olmMachine.getMissingSessions).toHaveBeenCalledWith([u1, u2]);
@@ -119,12 +120,13 @@ describe("KeyClaimManager", () => {
         let markRequestAsSentPromise = awaitCallToMarkRequestAsSent();
 
         // fire off two requests, and keep track of whether their promises resolve
+        const span = new LogSpan(logger, "test");
         let req1Resolved = false;
-        keyClaimManager.ensureSessionsForUsers([u1]).then(() => {
+        keyClaimManager.ensureSessionsForUsers(span, [u1]).then(() => {
             req1Resolved = true;
         });
         let req2Resolved = false;
-        const req2 = keyClaimManager.ensureSessionsForUsers([u2]).then(() => {
+        const req2 = keyClaimManager.ensureSessionsForUsers(span, [u2]).then(() => {
             req2Resolved = true;
         });
 

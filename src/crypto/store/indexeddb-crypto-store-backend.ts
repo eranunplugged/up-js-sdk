@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-import { logger, PrefixedLogger } from "../../logger";
-import * as utils from "../../utils";
+import { Logger, logger } from "../../logger";
+import { deepCompare } from "../../utils";
 import {
     CryptoStore,
     IDeviceData,
@@ -158,7 +158,7 @@ export class Backend implements CryptoStore {
 
             const existing = cursor.value;
 
-            if (utils.deepCompare(existing.requestBody, requestBody)) {
+            if (deepCompare(existing.requestBody, requestBody)) {
                 // got a match
                 callback(existing);
                 return;
@@ -906,7 +906,7 @@ export class Backend implements CryptoStore {
         mode: Mode,
         stores: string | string[],
         func: (txn: IDBTransaction) => T,
-        log: PrefixedLogger = logger,
+        log: Logger = logger,
     ): Promise<T> {
         let startTime: number;
         let description: string;

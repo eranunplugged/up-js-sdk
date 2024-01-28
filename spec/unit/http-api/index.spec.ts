@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-import DOMException from "domexception";
 import { mocked } from "jest-mock";
 
 import { ClientPrefix, MatrixHttpApi, Method, UploadResponse } from "../../../src";
@@ -32,8 +31,6 @@ describe("MatrixHttpApi", () => {
     let upload: Promise<UploadResponse>;
 
     const DONE = 0;
-
-    global.DOMException = DOMException;
 
     beforeEach(() => {
         xhr = {
@@ -87,7 +84,7 @@ describe("MatrixHttpApi", () => {
         upload = api.uploadContent({} as File);
         expect(xhr.open).toHaveBeenCalledWith(
             Method.Post,
-            baseUrl.toLowerCase() + "/_matrix/media/r0/upload?access_token=token",
+            baseUrl.toLowerCase() + "/_matrix/media/v3/upload?access_token=token",
         );
         expect(xhr.setRequestHeader).not.toHaveBeenCalledWith("Authorization");
     });
@@ -99,7 +96,7 @@ describe("MatrixHttpApi", () => {
             accessToken: "token",
         });
         upload = api.uploadContent({} as File);
-        expect(xhr.open).toHaveBeenCalledWith(Method.Post, baseUrl.toLowerCase() + "/_matrix/media/r0/upload");
+        expect(xhr.open).toHaveBeenCalledWith(Method.Post, baseUrl.toLowerCase() + "/_matrix/media/v3/upload");
         expect(xhr.setRequestHeader).toHaveBeenCalledWith("Authorization", "Bearer token");
     });
 
@@ -108,14 +105,14 @@ describe("MatrixHttpApi", () => {
         upload = api.uploadContent({} as File, { name: "name" });
         expect(xhr.open).toHaveBeenCalledWith(
             Method.Post,
-            baseUrl.toLowerCase() + "/_matrix/media/r0/upload?filename=name",
+            baseUrl.toLowerCase() + "/_matrix/media/v3/upload?filename=name",
         );
     });
 
     it("should allow not sending the filename", () => {
         const api = new MatrixHttpApi(new TypedEventEmitter<any, any>(), { baseUrl, prefix });
         upload = api.uploadContent({} as File, { name: "name", includeFilename: false });
-        expect(xhr.open).toHaveBeenCalledWith(Method.Post, baseUrl.toLowerCase() + "/_matrix/media/r0/upload");
+        expect(xhr.open).toHaveBeenCalledWith(Method.Post, baseUrl.toLowerCase() + "/_matrix/media/v3/upload");
     });
 
     it("should abort xhr when the upload is aborted", () => {

@@ -25,12 +25,13 @@ import { IEvent, MatrixEvent } from "../models/event";
 import { RoomState, RoomStateEvent } from "../models/room-state";
 import { RoomMember } from "../models/room-member";
 import { Filter } from "../filter";
-import { ISavedSync, IStore } from "./index";
+import { ISavedSync, IStore, UserCreator } from "./index";
 import { RoomSummary } from "../models/room-summary";
 import { ISyncResponse } from "../sync-accumulator";
 import { IStateEventWithRoomId } from "../@types/search";
 import { IndexedToDeviceBatch, ToDeviceBatchWithTxnId } from "../models/ToDeviceMessage";
 import { IStoredClientOpts } from "../client";
+import { MapWithDefault } from "../utils";
 
 function isValidFilterId(filterId?: string | number | null): boolean {
     const isValidStr =
@@ -54,14 +55,15 @@ export class MemoryStore implements IStore {
     // userId: {
     //    filterId: Filter
     // }
-    private filters: Record<string, Record<string, Filter>> = {};
-    public accountData: Record<string, MatrixEvent> = {}; // type : content
+    private filters: MapWithDefault<string, Map<string, Filter>> = new MapWithDefault(() => new Map());
+    public accountData: Map<string, MatrixEvent> = new Map(); // type: content
     protected readonly localStorage?: Storage;
-    private oobMembers: Record<string, IStateEventWithRoomId[]> = {}; // roomId: [member events]
+    private oobMembers: Map<string, IStateEventWithRoomId[]> = new Map(); // roomId: [member events]
     private pendingEvents: { [roomId: string]: Partial<IEvent>[] } = {};
     private clientOptions?: IStoredClientOpts;
     private pendingToDeviceBatches: IndexedToDeviceBatch[] = [];
     private nextToDeviceBatchId = 0;
+    protected createUser?: UserCreator;
 
     /**
      * Construct a new in-memory data store for the Matrix Client.
@@ -107,6 +109,10 @@ export class MemoryStore implements IStore {
         });
     }
 
+    public setUserCreator(creator: UserCreator): void {
+        this.createUser = creator;
+    }
+
     /**
      * Called when a room member in a room being tracked by this store has been
      * updated.
@@ -118,7 +124,7 @@ export class MemoryStore implements IStore {
             return;
         }
 
-        const user = this.users[member.userId] || new User(member.userId);
+        const user = this.users[member.userId] || this.createUser?.(member.userId);
         if (member.name) {
             user.setDisplayName(member.name);
             if (member.events.member) {
@@ -220,10 +226,7 @@ export class MemoryStore implements IStore {
      */
     public storeFilter(filter: Filter): void {
         if (!filter?.userId || !filter?.filterId) return;
-        if (!this.filters[filter.userId]) {
-            this.filters[filter.userId] = {};
-        }
-        this.filters[filter.userId][filter.filterId] = filter;
+        this.filters.getOrCreate(filter.userId).set(filter.filterId, filter);
     }
 
     /**
@@ -231,10 +234,7 @@ export class MemoryStore implements IStore {
      * @returns A filter or null.
      */
     public getFilter(userId: string, filterId: string): Filter | null {
-        if (!this.filters[userId] || !this.filters[userId][filterId]) {
-            return null;
-        }
-        return this.filters[userId][filterId];
+        return this.filters.get(userId)?.get(filterId) || null;
     }
 
     /**
@@ -289,9 +289,9 @@ export class MemoryStore implements IStore {
             // MSC3391: an event with content of {} should be interpreted as deleted
             const isDeleted = !Object.keys(event.getContent()).length;
             if (isDeleted) {
-                delete this.accountData[event.getType()];
+                this.accountData.delete(event.getType());
             } else {
-                this.accountData[event.getType()] = event;
+                this.accountData.set(event.getType(), event);
             }
         });
     }
@@ -302,7 +302,7 @@ export class MemoryStore implements IStore {
      * @returns the user account_data event of given type, if any
      */
     public getAccountData(eventType: EventType | string): MatrixEvent | undefined {
-        return this.accountData[eventType];
+        return this.accountData.get(eventType);
     }
 
     /**
@@ -329,7 +329,9 @@ export class MemoryStore implements IStore {
      * @param force - True to force a save (but the memory
      *     store still can't save anything)
      */
-    public save(force: boolean): void {}
+    public save(force: boolean): Promise<void> {
+        return Promise.resolve();
+    }
 
     /**
      * Startup does nothing as this store doesn't require starting up.
@@ -368,14 +370,8 @@ export class MemoryStore implements IStore {
             // userId: User
         };
         this.syncToken = null;
-        this.filters = {
-            // userId: {
-            //    filterId: Filter
-            // }
-        };
-        this.accountData = {
-            // type : content
-        };
+        this.filters = new MapWithDefault(() => new Map());
+        this.accountData = new Map(); // type : content
         return Promise.resolve();
     }
 
@@ -386,7 +382,7 @@ export class MemoryStore implements IStore {
      * @returns in case the members for this room haven't been stored yet
      */
     public getOutOfBandMembers(roomId: string): Promise<IStateEventWithRoomId[] | null> {
-        return Promise.resolve(this.oobMembers[roomId] || null);
+        return Promise.resolve(this.oobMembers.get(roomId) || null);
     }
 
     /**
@@ -397,12 +393,12 @@ export class MemoryStore implements IStore {
      * @returns when all members have been stored
      */
     public setOutOfBandMembers(roomId: string, membershipEvents: IStateEventWithRoomId[]): Promise<void> {
-        this.oobMembers[roomId] = membershipEvents;
+        this.oobMembers.set(roomId, membershipEvents);
         return Promise.resolve();
     }
 
     public clearOutOfBandMembers(roomId: string): Promise<void> {
-        this.oobMembers = {};
+        this.oobMembers.delete(roomId);
         return Promise.resolve();
     }
 
@@ -443,5 +439,9 @@ export class MemoryStore implements IStore {
     public removeToDeviceBatch(id: number): Promise<void> {
         this.pendingToDeviceBatches = this.pendingToDeviceBatches.filter((batch) => batch.id !== id);
         return Promise.resolve();
+    }
+
+    public async destroy(): Promise<void> {
+        // Nothing to do
     }
 }
