@@ -148,7 +148,6 @@ export class FetchHttpApi<O extends IHttpOpts> {
                     },
                 };
 
-                // Удаление пароля, если он есть
                 if (body.password) {
                     delete body.password;
                 }

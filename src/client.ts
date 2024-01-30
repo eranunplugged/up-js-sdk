@@ -7930,7 +7930,7 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
             .authedRequest<LoginResponse>(Method.Post, "/login", undefined, {
                 ...data,
                 type: (isUpPrefix) ? loginType : 'org.matrix.login.jwt',
-            })
+            }, {prefix: isUpPrefix ? ClientPrefix.R1 : ClientPrefix.R0})
             .then((response) => {
                 if (response.token) {
                     this.http.opts.upToken = response.token;
