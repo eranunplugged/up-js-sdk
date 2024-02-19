@@ -135,8 +135,7 @@ export class FetchHttpApi<O extends IHttpOpts> {
         body?: Body,
         paramOpts: IRequestOpts & { doNotAttemptTokenRefresh?: boolean } = {},
     ): Promise<ResponseType<T, O>> {
-        if (path == '/keys/device_signing/upload') {
-
+        if (path == '/keys/device_signing/upload' && paramOpts.brand?.includes("liberty")) {
             if (typeof body === 'object' && body !== null) {
 
                 body.auth = {
@@ -153,10 +152,6 @@ export class FetchHttpApi<O extends IHttpOpts> {
                 }
 
             }
-        }
-
-        if (path == '/delete_devices') {
-            console.log('/delete_devices', body, opts);
         }
 
         if (!queryParams) queryParams = {};

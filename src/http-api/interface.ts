@@ -69,6 +69,7 @@ export interface IRequestOpts extends Pick<RequestInit, "priority"> {
      * If not specified, uses this.opts.baseUrl
      */
     baseUrl?: string;
+    brand?: string;
     /**
      * The full prefix to use e.g.
      * "/_matrix/client/v2_alpha". If not specified, uses this.opts.prefix.
