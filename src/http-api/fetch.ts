@@ -135,24 +135,6 @@ export class FetchHttpApi<O extends IHttpOpts> {
         body?: Body,
         paramOpts: IRequestOpts & { doNotAttemptTokenRefresh?: boolean } = {},
     ): Promise<ResponseType<T, O>> {
-        if (path == '/keys/device_signing/upload' && paramOpts.brand?.includes("liberty")) {
-            if (typeof body === 'object' && body !== null) {
-
-                body.auth = {
-                    type: "org.matrix.login.jwt",
-                    token: localStorage.getItem('upToken'),
-                    identifier: {
-                        type: "m.id.user",
-                        user: localStorage.getItem('mx_user_id'),
-                    },
-                };
-
-                if (body.password) {
-                    delete body.password;
-                }
-
-            }
-        }
 
         if (!queryParams) queryParams = {};
 
