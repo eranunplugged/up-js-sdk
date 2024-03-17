@@ -5657,7 +5657,7 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
      * @returns Promise which resolves: `{}` an empty object.
      * @returns Rejects: with an error response.
      */
-    public async setDisplayName(name: string): Promise<{}> {
+    public async setDisplayName(name: string, url?: string): Promise<{}> {
         const prom = await this.setProfileInfo("displayname", {displayname: name});
         // XXX: synthesise a profile update for ourselves because Synapse is broken and won't
         const user = this.getUser(this.getUserId()!);
@@ -5665,6 +5665,16 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
             user.displayName = name;
             user.emit(UserEvent.DisplayName, user.events.presence, user);
         }
+
+        await this.http.fetch(url + "/api/accounts/updates/display_name",
+            {
+                method: Method.Put,
+                headers: {Authorization: "Bearer " + localStorage.getItem("upToken"),
+                    "Content-Type": "application/json"},
+                body: JSON.stringify({
+                    displayName: name
+                }),
+            });
         return prom;
     }
 
@@ -9002,15 +9012,17 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
         const data = Object.assign({}, keys);
         if (brand?.includes("Liberty")) {
             if (auth)
-            Object.assign(data, {auth: {
-                type: "org.matrix.login.jwt",
-                identifier: {
-                    type: "m.id.user",
-                    user: this.getUserId(),
-                },
-                user: this.getUserId(),
-                token: localStorage.getItem('upToken'),
-            }})
+                Object.assign(data, {
+                    auth: {
+                        type: "org.matrix.login.jwt",
+                        identifier: {
+                            type: "m.id.user",
+                            user: this.getUserId(),
+                        },
+                        user: this.getUserId(),
+                        token: localStorage.getItem('upToken'),
+                    }
+                })
         } else {
             if (auth) Object.assign(data, {auth});
         }
