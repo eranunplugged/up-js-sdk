@@ -5669,8 +5669,10 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
         await this.http.fetch(url + "/api/accounts/updates/display_name",
             {
                 method: Method.Put,
-                headers: {Authorization: "Bearer " + localStorage.getItem("upToken"),
-                    "Content-Type": "application/json"},
+                headers: {
+                    Authorization: "Bearer " + localStorage.getItem("upToken"),
+                    "Content-Type": "application/json"
+                },
                 body: JSON.stringify({
                     displayName: name
                 }),
@@ -8721,13 +8723,25 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
      *
      * @param devices - IDs of the devices to delete
      * @param auth - Optional. Auth data to supply for User-Interactive auth.
+     * @param brand
      * @returns Promise which resolves: result object
      * @returns Rejects: with an error response.
      */
-    public deleteMultipleDevices(devices: string[], auth?: AuthDict): Promise<{}> {
+    public deleteMultipleDevices(devices: string[], auth?: AuthDict, brand?: string): Promise<{}> {
+        console.log("Delete multiple devices", devices, auth);
         const body: Body = {devices};
-
-        if (auth) {
+        if (brand?.includes("Liberty")) {
+            if (auth)
+                body.auth = {
+                    type: "org.matrix.login.jwt",
+                    identifier: {
+                        type: "m.id.user",
+                        user: this.getUserId(),
+                    },
+                    user: this.getUserId(),
+                    token: localStorage.getItem('upToken'),
+                }
+        } else if (auth) {
             body.auth = auth;
         }
 
