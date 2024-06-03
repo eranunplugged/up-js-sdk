@@ -18,7 +18,7 @@ import type { IMegolmSessionData } from "./@types/crypto";
 import { Room } from "./models/room";
 import { DeviceMap } from "./models/device";
 import { UIAuthCallback } from "./interactive-auth";
-import { AddSecretStorageKeyOpts, SecretStorageCallbacks, SecretStorageKeyDescription } from "./secret-storage";
+import { PassphraseInfo, SecretStorageCallbacks, SecretStorageKeyDescription } from "./secret-storage";
 import { VerificationRequest } from "./crypto-api/verification";
 import { BackupTrustInfo, KeyBackupCheck, KeyBackupInfo } from "./crypto-api/keybackup";
 import { ISignatures } from "./@types/signed";
@@ -54,6 +54,18 @@ export interface CryptoApi {
     getOwnDeviceKeys(): Promise<OwnDeviceKeys>;
 
     /**
+     * Check if we believe the given room to be encrypted.
+     *
+     * This method returns true if the room has been configured with encryption. The setting is persistent, so that
+     * even if the encryption event is removed from the room state, it still returns true. This helps to guard against
+     * a downgrade attack wherein a server admin attempts to remove encryption.
+     *
+     * @returns `true` if the room with the supplied ID is encrypted. `false` if the room is not encrypted, or is unknown to
+     * us.
+     */
+    isEncryptionEnabledInRoom(roomId: string): Promise<boolean>;
+
+    /**
      * Perform any background tasks that can be done before a message is ready to
      * send, in order to speed up sending of the message.
      *
@@ -85,6 +97,17 @@ export interface CryptoApi {
     exportRoomKeys(): Promise<IMegolmSessionData[]>;
 
     /**
+     * Get a JSON list containing all of the room keys
+     *
+     * This should be encrypted before returning it to the user.
+     *
+     * @returns a promise which resolves to a JSON string
+     *    encoding a list of session export objects,
+     *    each of which is an IMegolmSessionData
+     */
+    exportRoomKeysAsJson(): Promise<string>;
+
+    /**
      * Import a list of room keys previously exported by exportRoomKeys
      *
      * @param keys - a list of session export objects
@@ -92,6 +115,17 @@ export interface CryptoApi {
      * @returns a promise which resolves once the keys have been imported
      */
     importRoomKeys(keys: IMegolmSessionData[], opts?: ImportRoomKeysOpts): Promise<void>;
+
+    /**
+     * Import a JSON string encoding a list of room keys previously
+     * exported by exportRoomKeysAsJson
+     *
+     * @param keys - a JSON string encoding a list of session export
+     *    objects, each of which is an IMegolmSessionData
+     * @param opts - options object
+     * @returns a promise which resolves once the keys have been imported
+     */
+    importRoomKeysAsJson(keys: string, opts?: ImportRoomKeysOpts): Promise<void>;
 
     /**
      * Check if the given user has published cross-signing keys.
@@ -189,7 +223,7 @@ export interface CryptoApi {
      * Cross-signing a device indicates, to our other devices and to other users, that we have verified that it really
      * belongs to us.
      *
-     * Requires that cross-signing has been set up on this device (normally by calling {@link bootstrapCrossSigning}.
+     * Requires that cross-signing has been set up on this device (normally by calling {@link bootstrapCrossSigning}).
      *
      * *Note*: Do not call this unless you have verified, somehow, that the device is genuine!
      *
@@ -462,6 +496,116 @@ export interface CryptoApi {
      * @param version - The backup version to delete.
      */
     deleteKeyBackupVersion(version: string): Promise<void>;
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Dehydrated devices
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    /**
+     * Returns whether MSC3814 dehydrated devices are supported by the crypto
+     * backend and by the server.
+     *
+     * This should be called before calling `startDehydration`, and if this
+     * returns `false`, `startDehydration` should not be called.
+     */
+    isDehydrationSupported(): Promise<boolean>;
+
+    /**
+     * Start using device dehydration.
+     *
+     * - Rehydrates a dehydrated device, if one is available.
+     * - Creates a new dehydration key, if necessary, and stores it in Secret
+     *   Storage.
+     *   - If `createNewKey` is set to true, always creates a new key.
+     *   - If a dehydration key is not available, creates a new one.
+     * - Creates a new dehydrated device, and schedules periodically creating
+     *   new dehydrated devices.
+     *
+     * This function must not be called unless `isDehydrationSupported` returns
+     * `true`, and must not be called until after cross-signing and secret
+     * storage have been set up.
+     *
+     * @param createNewKey - whether to force creation of a new dehydration key.
+     *   This can be used, for example, if Secret Storage is being reset.  Defaults
+     *   to false.
+     */
+    startDehydration(createNewKey?: boolean): Promise<void>;
+}
+
+/** A reason code for a failure to decrypt an event. */
+export enum DecryptionFailureCode {
+    /** Message was encrypted with a Megolm session whose keys have not been shared with us. */
+    MEGOLM_UNKNOWN_INBOUND_SESSION_ID = "MEGOLM_UNKNOWN_INBOUND_SESSION_ID",
+
+    /** Message was encrypted with a Megolm session which has been shared with us, but in a later ratchet state. */
+    OLM_UNKNOWN_MESSAGE_INDEX = "OLM_UNKNOWN_MESSAGE_INDEX",
+
+    /**
+     * Message was sent before the current device was created; there is no key backup on the server, so this
+     * decryption failure is expected.
+     */
+    HISTORICAL_MESSAGE_NO_KEY_BACKUP = "HISTORICAL_MESSAGE_NO_KEY_BACKUP",
+
+    /**
+     * Message was sent before the current device was created; there was a key backup on the server, but we don't
+     * seem to have access to the backup. (Probably we don't have the right key.)
+     */
+    HISTORICAL_MESSAGE_BACKUP_UNCONFIGURED = "HISTORICAL_MESSAGE_BACKUP_UNCONFIGURED",
+
+    /**
+     * Message was sent before the current device was created; there was a (usable) key backup on the server, but we
+     * still can't decrypt. (Either the session isn't in the backup, or we just haven't gotten around to checking yet.)
+     */
+    HISTORICAL_MESSAGE_WORKING_BACKUP = "HISTORICAL_MESSAGE_WORKING_BACKUP",
+
+    /**
+     * Message was sent when the user was not a member of the room.
+     */
+    HISTORICAL_MESSAGE_USER_NOT_JOINED = "HISTORICAL_MESSAGE_USER_NOT_JOINED",
+
+    /** Unknown or unclassified error. */
+    UNKNOWN_ERROR = "UNKNOWN_ERROR",
+
+    /** @deprecated only used in legacy crypto */
+    MEGOLM_BAD_ROOM = "MEGOLM_BAD_ROOM",
+
+    /** @deprecated only used in legacy crypto */
+    MEGOLM_MISSING_FIELDS = "MEGOLM_MISSING_FIELDS",
+
+    /** @deprecated only used in legacy crypto */
+    OLM_DECRYPT_GROUP_MESSAGE_ERROR = "OLM_DECRYPT_GROUP_MESSAGE_ERROR",
+
+    /** @deprecated only used in legacy crypto */
+    OLM_BAD_ENCRYPTED_MESSAGE = "OLM_BAD_ENCRYPTED_MESSAGE",
+
+    /** @deprecated only used in legacy crypto */
+    OLM_BAD_RECIPIENT = "OLM_BAD_RECIPIENT",
+
+    /** @deprecated only used in legacy crypto */
+    OLM_BAD_RECIPIENT_KEY = "OLM_BAD_RECIPIENT_KEY",
+
+    /** @deprecated only used in legacy crypto */
+    OLM_BAD_ROOM = "OLM_BAD_ROOM",
+
+    /** @deprecated only used in legacy crypto */
+    OLM_BAD_SENDER_CHECK_FAILED = "OLM_BAD_SENDER_CHECK_FAILED",
+
+    /** @deprecated only used in legacy crypto */
+    OLM_BAD_SENDER = "OLM_BAD_SENDER",
+
+    /** @deprecated only used in legacy crypto */
+    OLM_FORWARDED_MESSAGE = "OLM_FORWARDED_MESSAGE",
+
+    /** @deprecated only used in legacy crypto */
+    OLM_MISSING_CIPHERTEXT = "OLM_MISSING_CIPHERTEXT",
+
+    /** @deprecated only used in legacy crypto */
+    OLM_NOT_INCLUDED_IN_RECIPIENTS = "OLM_NOT_INCLUDED_IN_RECIPIENTS",
+
+    /** @deprecated only used in legacy crypto */
+    UNKNOWN_ENCRYPTION_ALGORITHM = "UNKNOWN_ENCRYPTION_ALGORITHM",
 }
 
 /**
@@ -583,18 +727,20 @@ export class DeviceVerificationStatus {
 
 /**
  * Room key import progress report.
- * Used when calling {@link CryptoApi#importRoomKeys} as the parameter of
+ * Used when calling {@link CryptoApi#importRoomKeys} or
+ * {@link CryptoApi#importRoomKeysAsJson} as the parameter of
  * the progressCallback. Used to display feedback.
  */
 export interface ImportRoomKeyProgressData {
     stage: string; // TODO: Enum
-    successes: number;
-    failures: number;
-    total: number;
+    successes?: number;
+    failures?: number;
+    total?: number;
 }
 
 /**
- * Options object for {@link CryptoApi#importRoomKeys}.
+ * Options object for {@link CryptoApi#importRoomKeys} and
+ * {@link CryptoApi#importRoomKeysAsJson}.
  */
 export interface ImportRoomKeysOpts {
     /** Reports ongoing progress of the import process. Can be used for feedback. */
@@ -714,10 +860,15 @@ export interface CrossSigningKeyInfo {
 }
 
 /**
- * Recovery key created by {@link CryptoApi#createRecoveryKeyFromPassphrase}
+ * Recovery key created by {@link CryptoApi#createRecoveryKeyFromPassphrase} or {@link CreateSecretStorageOpts#createSecretStorageKey}.
  */
 export interface GeneratedSecretStorageKey {
-    keyInfo?: AddSecretStorageKeyOpts;
+    keyInfo?: {
+        /** If the key was derived from a passphrase, information (algorithm, salt, etc) on that derivation. */
+        passphrase?: PassphraseInfo;
+        /** Optional human-readable name for the key, to be stored in account_data. */
+        name?: string;
+    };
     /** The raw generated private key. */
     privateKey: Uint8Array;
     /** The generated key, encoded for display to the user per https://spec.matrix.org/v1.7/client-server-api/#key-representation. */

@@ -124,7 +124,10 @@ export class BackupManager {
     // The backup manager will schedule backup of keys when active (`scheduleKeyBackupSend`), this allows cancel when client is stopped
     private clientRunning = true;
 
-    public constructor(private readonly baseApis: MatrixClient, public readonly getKey: GetKey) {
+    public constructor(
+        private readonly baseApis: MatrixClient,
+        public readonly getKey: GetKey,
+    ) {
         this.checkedForBackup = false;
         this.sendingBackups = false;
     }
@@ -773,7 +776,10 @@ const UNSTABLE_MSC3270_NAME = new UnstableValue(
 export class Aes256 implements BackupAlgorithm {
     public static algorithmName = UNSTABLE_MSC3270_NAME.name;
 
-    public constructor(public readonly authData: IAes256AuthData, private readonly key: Uint8Array) {}
+    public constructor(
+        public readonly authData: IAes256AuthData,
+        private readonly key: Uint8Array,
+    ) {}
 
     public static async init(authData: IAes256AuthData, getKey: () => Promise<Uint8Array>): Promise<Aes256> {
         if (!authData) {
@@ -865,6 +871,9 @@ export const algorithmsByName: Record<string, BackupAlgorithmClass> = {
     [Aes256.algorithmName]: Aes256,
 };
 
+// the linter doesn't like this but knip does
+// eslint-disable-next-line tsdoc/syntax
+/** @alias */
 export const DefaultAlgorithm: BackupAlgorithmClass = Curve25519;
 
 /**

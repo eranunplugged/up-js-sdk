@@ -19,7 +19,16 @@ import { Mocked } from "jest-mock";
 import * as utils from "../test-utils/test-utils";
 import { CRYPTO_ENABLED, IStoredClientOpts, MatrixClient } from "../../src/client";
 import { MatrixEvent } from "../../src/models/event";
-import { Filter, KnockRoomOpts, MemoryStore, Method, Room, SERVICE_TYPES } from "../../src/matrix";
+import {
+    Filter,
+    JoinRule,
+    KnockRoomOpts,
+    MemoryStore,
+    Method,
+    Room,
+    RoomSummary,
+    SERVICE_TYPES,
+} from "../../src/matrix";
 import { TestClient } from "../TestClient";
 import { THREAD_RELATION_TYPE } from "../../src/models/thread";
 import { IFilterDefinition } from "../../src/filter";
@@ -27,6 +36,7 @@ import { ISearchResults } from "../../src/@types/search";
 import { IStore } from "../../src/store";
 import { CryptoBackend } from "../../src/common-crypto/CryptoBackend";
 import { SetPresence } from "../../src/sync";
+import { KnownMembership } from "../../src/@types/membership";
 
 describe("MatrixClient", function () {
     const userId = "@alice:localhost";
@@ -162,7 +172,7 @@ describe("MatrixClient", function () {
                 utils.mkMembership({
                     user: userId,
                     room: roomId,
-                    mship: "join",
+                    mship: KnownMembership.Join,
                     event: true,
                 }),
             ]);
@@ -182,7 +192,7 @@ describe("MatrixClient", function () {
                 utils.mkMembership({
                     user: userId,
                     room: roomId,
-                    mship: "join",
+                    mship: KnownMembership.Join,
                     event: true,
                 }),
             ]);
@@ -269,7 +279,7 @@ describe("MatrixClient", function () {
                 utils.mkMembership({
                     user: userId,
                     room: roomId,
-                    mship: "knock",
+                    mship: KnownMembership.Knock,
                     event: true,
                 }),
             ]);
@@ -1709,6 +1719,102 @@ describe("MatrixClient", function () {
             await Promise.all([client.unbindThreePid("email", "alice@server.com"), httpBackend.flushAllExpected()]);
         });
     });
+
+    describe("getRoomSummary", () => {
+        const roomId = "!foo:bar";
+        const encodedRoomId = encodeURIComponent(roomId);
+
+        const roomSummary: RoomSummary = {
+            "room_id": roomId,
+            "name": "My Room",
+            "avatar_url": "",
+            "topic": "My room topic",
+            "world_readable": false,
+            "guest_can_join": false,
+            "num_joined_members": 1,
+            "room_type": "",
+            "join_rule": JoinRule.Public,
+            "membership": "leave",
+            "im.nheko.summary.room_version": "6",
+            "im.nheko.summary.encryption": "algo",
+        };
+
+        const prefix = "/_matrix/client/unstable/im.nheko.summary/";
+        const suffix = `summary/${encodedRoomId}`;
+        const deprecatedSuffix = `rooms/${encodedRoomId}/summary`;
+
+        const errorUnrecogStatus = 404;
+        const errorUnrecogBody = {
+            errcode: "M_UNRECOGNIZED",
+            error: "Unsupported endpoint",
+        };
+
+        const errorBadreqStatus = 400;
+        const errorBadreqBody = {
+            errcode: "M_UNKNOWN",
+            error: "Invalid request",
+        };
+
+        it("should respond with a valid room summary object", () => {
+            httpBackend.when("GET", prefix + suffix).respond(200, roomSummary);
+
+            const prom = client.getRoomSummary(roomId).then((response) => {
+                expect(response).toEqual(roomSummary);
+            });
+
+            httpBackend.flush("");
+            return prom;
+        });
+
+        it("should allow fallback to the deprecated endpoint", () => {
+            httpBackend.when("GET", prefix + suffix).respond(errorUnrecogStatus, errorUnrecogBody);
+            httpBackend.when("GET", prefix + deprecatedSuffix).respond(200, roomSummary);
+
+            const prom = client.getRoomSummary(roomId).then((response) => {
+                expect(response).toEqual(roomSummary);
+            });
+
+            httpBackend.flush("");
+            return prom;
+        });
+
+        it("should respond to unsupported path with error", () => {
+            httpBackend.when("GET", prefix + suffix).respond(errorUnrecogStatus, errorUnrecogBody);
+            httpBackend.when("GET", prefix + deprecatedSuffix).respond(errorUnrecogStatus, errorUnrecogBody);
+
+            const prom = client.getRoomSummary(roomId).then(
+                function (response) {
+                    throw Error("request not failed");
+                },
+                function (error) {
+                    expect(error.httpStatus).toEqual(errorUnrecogStatus);
+                    expect(error.errcode).toEqual(errorUnrecogBody.errcode);
+                    expect(error.message).toEqual(`MatrixError: [${errorUnrecogStatus}] ${errorUnrecogBody.error}`);
+                },
+            );
+
+            httpBackend.flush("");
+            return prom;
+        });
+
+        it("should respond to invalid path arguments with error", () => {
+            httpBackend.when("GET", prefix).respond(errorBadreqStatus, errorBadreqBody);
+
+            const prom = client.getRoomSummary("notAroom").then(
+                function (response) {
+                    throw Error("request not failed");
+                },
+                function (error) {
+                    expect(error.httpStatus).toEqual(errorBadreqStatus);
+                    expect(error.errcode).toEqual(errorBadreqBody.errcode);
+                    expect(error.message).toEqual(`MatrixError: [${errorBadreqStatus}] ${errorBadreqBody.error}`);
+                },
+            );
+
+            httpBackend.flush("");
+            return prom;
+        });
+    });
 });
 
 function withThreadId(event: MatrixEvent, newThreadId: string): MatrixEvent {
@@ -1912,7 +2018,7 @@ const buildEventJoinRules = () =>
     new MatrixEvent({
         age: 80123696,
         content: {
-            join_rule: "invite",
+            join_rule: KnownMembership.Invite,
         },
         event_id: "$6JDDeDp7fEc0F6YnTWMruNcKWFltR3e9wk7wWDDJrAU",
         origin_server_ts: 1643815441191,
@@ -1966,7 +2072,7 @@ const buildEventMember = () =>
         content: {
             avatar_url: "mxc://matrix.org/aNtbVcFfwotudypZcHsIcPOc",
             displayname: "andybalaam-test1",
-            membership: "join",
+            membership: KnownMembership.Join,
         },
         event_id: "$Ex5eVmMs_ti784mo8bgddynbwLvy6231lCycJr7Cl9M",
         origin_server_ts: 1643815439608,
