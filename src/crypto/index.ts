@@ -732,7 +732,6 @@ export class Crypto extends TypedEventEmitter<CryptoEvent, CryptoEventHandlerMap
             } else {
                 decryption.generate_key();
             const privateKey = decryption.get_private_key();
-                const privateKey = decryption.get_private_key();
                 return {
                     privateKey: privateKey,
                     encodedPrivateKey: encodeRecoveryKey(privateKey),
