@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-import { IMarkerFoundOptions, RoomState } from "./room-state";
-import { EventTimelineSet } from "./event-timeline-set";
-import { MatrixEvent } from "./event";
-import { Filter } from "../filter";
-import { EventType } from "../@types/event";
+import { IMarkerFoundOptions, RoomState } from "./room-state.ts";
+import { EventTimelineSet } from "./event-timeline-set.ts";
+import { MatrixEvent } from "./event.ts";
+import { Filter } from "../filter.ts";
+import { EventType } from "../@types/event.ts";
 
 export interface IInitialiseStateOptions extends Pick<IMarkerFoundOptions, "timelineWasEmpty"> {
     // This is a separate interface without any extra stuff currently added on
@@ -127,7 +127,7 @@ export class EventTimeline {
     public constructor(private readonly eventTimelineSet: EventTimelineSet) {
         this.roomId = eventTimelineSet.room?.roomId ?? null;
         if (this.roomId) {
-            this.startState = new RoomState(this.roomId);
+            this.startState = new RoomState(this.roomId, undefined, true);
             this.endState = new RoomState(this.roomId);
         }
 
@@ -267,7 +267,7 @@ export class EventTimeline {
     /**
      * Get a pagination token
      *
-     * @param direction -   EventTimeline.BACKWARDS to get the pagination
+     * @param direction - EventTimeline.BACKWARDS to get the pagination
      *   token for going backwards in time; EventTimeline.FORWARDS to get the
      *   pagination token for going forwards in time.
      *

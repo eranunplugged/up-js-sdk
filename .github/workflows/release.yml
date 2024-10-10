@@ -28,7 +28,7 @@ jobs:
         with:
             final: ${{ inputs.mode == 'final' }}
             npm: ${{ inputs.npm }}
-            downstreams: '["matrix-org/matrix-react-sdk", "element-hq/element-web"]'
+            downstreams: '["element-hq/matrix-react-sdk", "element-hq/element-web"]'
 
     docs:
         name: Publish Documentation
@@ -43,6 +43,7 @@ jobs:
               uses: actions/setup-node@v4
               with:
                   cache: "yarn"
+                  node-version-file: package.json
 
             - name: 🔨 Install dependencies
               run: "yarn install --frozen-lockfile"

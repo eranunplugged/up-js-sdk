@@ -21,17 +21,17 @@ import {
     DuplicateStrategy,
     IAddLiveEventOptions,
     EventTimelineSetHandlerMap,
-} from "./event-timeline-set";
-import { Direction, EventTimeline } from "./event-timeline";
-import { getHttpUriForMxc } from "../content-repo";
-import { compare, removeElement } from "../utils";
-import { normalize, noUnsafeEventProps } from "../utils";
-import { IEvent, IThreadBundledRelationship, MatrixEvent, MatrixEventEvent, MatrixEventHandlerMap } from "./event";
-import { EventStatus } from "./event-status";
-import { RoomMember } from "./room-member";
-import { IRoomSummary, RoomSummary } from "./room-summary";
-import { logger } from "../logger";
-import { TypedReEmitter } from "../ReEmitter";
+} from "./event-timeline-set.ts";
+import { Direction, EventTimeline } from "./event-timeline.ts";
+import { getHttpUriForMxc } from "../content-repo.ts";
+import { removeElement } from "../utils.ts";
+import { normalize, noUnsafeEventProps } from "../utils.ts";
+import { IEvent, IThreadBundledRelationship, MatrixEvent, MatrixEventEvent, MatrixEventHandlerMap } from "./event.ts";
+import { EventStatus } from "./event-status.ts";
+import { RoomMember } from "./room-member.ts";
+import { IRoomSummary, RoomSummary } from "./room-summary.ts";
+import { logger } from "../logger.ts";
+import { TypedReEmitter } from "../ReEmitter.ts";
 import {
     EventType,
     RoomCreateTypeField,
@@ -40,12 +40,12 @@ import {
     EVENT_VISIBILITY_CHANGE_TYPE,
     RelationType,
     UNSIGNED_THREAD_ID_FIELD,
-} from "../@types/event";
-import { IRoomVersionsCapability, MatrixClient, PendingEventOrdering, RoomVersionStability } from "../client";
-import { GuestAccess, HistoryVisibility, JoinRule, ResizeMethod } from "../@types/partials";
-import { Filter, IFilterDefinition } from "../filter";
-import { RoomState, RoomStateEvent, RoomStateEventHandlerMap } from "./room-state";
-import { BeaconEvent, BeaconEventHandlerMap } from "./beacon";
+} from "../@types/event.ts";
+import { MatrixClient, PendingEventOrdering } from "../client.ts";
+import { GuestAccess, HistoryVisibility, JoinRule, ResizeMethod } from "../@types/partials.ts";
+import { Filter, IFilterDefinition } from "../filter.ts";
+import { RoomState, RoomStateEvent, RoomStateEventHandlerMap } from "./room-state.ts";
+import { BeaconEvent, BeaconEventHandlerMap } from "./beacon.ts";
 import {
     Thread,
     ThreadEvent,
@@ -54,22 +54,23 @@ import {
     THREAD_RELATION_TYPE,
     FILTER_RELATED_BY_SENDERS,
     ThreadFilterType,
-} from "./thread";
+} from "./thread.ts";
 import {
     CachedReceiptStructure,
     MAIN_ROOM_TIMELINE,
     Receipt,
     ReceiptContent,
     ReceiptType,
-} from "../@types/read_receipts";
-import { IStateEventWithRoomId } from "../@types/search";
-import { RelationsContainer } from "./relations-container";
-import { ReadReceipt, synthesizeReceipt } from "./read-receipt";
-import { isPollEvent, Poll, PollEvent } from "./poll";
-import { RoomReceipts } from "./room-receipts";
-import { compareEventOrdering } from "./compare-event-ordering";
-import * as utils from "../utils";
-import { KnownMembership, Membership } from "../@types/membership";
+} from "../@types/read_receipts.ts";
+import { IStateEventWithRoomId } from "../@types/search.ts";
+import { RelationsContainer } from "./relations-container.ts";
+import { ReadReceipt, synthesizeReceipt } from "./read-receipt.ts";
+import { isPollEvent, Poll, PollEvent } from "./poll.ts";
+import { RoomReceipts } from "./room-receipts.ts";
+import { compareEventOrdering } from "./compare-event-ordering.ts";
+import * as utils from "../utils.ts";
+import { KnownMembership, Membership } from "../@types/membership.ts";
+import { Capabilities, IRoomVersionsCapability, RoomVersionStability } from "../serverCapabilities.ts";
 import dis from "matrix-react-sdk/src/dispatcher/dispatcher"
 
 // These constants are used as sane defaults when the homeserver doesn't support
@@ -209,7 +210,7 @@ export type RoomEventHandlerMap = {
      * });
      * ```
      */
-    [RoomEvent.AccountData]: (event: MatrixEvent, room: Room, lastEvent?: MatrixEvent) => void;
+    [RoomEvent.AccountData]: (event: MatrixEvent, room: Room, prevEvent?: MatrixEvent) => void;
     /**
      * Fires whenever a receipt is received for a room
      * @param event - The receipt event
@@ -398,7 +399,8 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
      *             Use getLiveTimeline().getState(EventTimeline.FORWARDS) instead.
      */
     public currentState!: RoomState;
-    public readonly relations = new RelationsContainer(this.client, this);
+
+    public readonly relations;
 
     /**
      * A collection of events known by the client
@@ -460,6 +462,7 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
         private readonly opts: IOpts = {},
     ) {
         super();
+
         // In some cases, we add listeners for every displayed Matrix event, so it's
         // common to have quite a few more than the default limit.
         this.setMaxListeners(100);
@@ -469,6 +472,8 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
 
         this.name = roomId;
         this.normalizedName = roomId;
+
+        this.relations = new RelationsContainer(this.client, this);
 
         // Listen to our own receipt event as a more modular way of processing our own
         // receipts. No need to remove the listener: it's on ourself anyway.
@@ -612,7 +617,10 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
      * Resolves to the version the room should be upgraded to.
      */
     public async getRecommendedVersion(): Promise<IRecommendedVersion> {
-        const capabilities = await this.client.getCapabilities();
+        let capabilities: Capabilities = {};
+        try {
+            capabilities = await this.client.getCapabilities();
+        } catch (e) {}
         let versionCap = capabilities["m.room_versions"];
         if (!versionCap) {
             versionCap = {
@@ -637,8 +645,12 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
                     "to be supporting a newer room version we don't know about.",
             );
 
-            const caps = await this.client.getCapabilities(true);
-            versionCap = caps["m.room_versions"];
+            try {
+                capabilities = await this.client.fetchCapabilities();
+            } catch (e) {
+                logger.warn("Failed to refresh room version capabilities", e);
+            }
+            versionCap = capabilities["m.room_versions"];
             if (!versionCap) {
                 logger.warn("No room version capability - assuming upgrade required.");
                 return result;
@@ -2086,7 +2098,7 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
     }
 
     /**
-     * Calls {@link processPollEvent} for a list of events.
+     * Process a list of poll events.
      *
      * @param events - List of events
      */
@@ -3445,7 +3457,8 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
                 return true;
             });
             // make sure members have stable order
-            otherMembers.sort((a, b) => compare(a.userId, b.userId));
+            const collator = new Intl.Collator();
+            otherMembers.sort((a, b) => collator.compare(a.userId, b.userId));
             // only 5 first members, immitate summaryHeroes
             otherMembers = otherMembers.slice(0, 5);
             otherNames = otherMembers.map((m) => m.name);

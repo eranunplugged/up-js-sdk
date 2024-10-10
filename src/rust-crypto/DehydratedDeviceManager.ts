@@ -16,14 +16,13 @@ limitations under the License.
 
 import * as RustSdkCryptoJs from "@matrix-org/matrix-sdk-crypto-wasm";
 
-import { OutgoingRequestProcessor } from "./OutgoingRequestProcessor";
-import { encodeUri } from "../utils";
-import { IHttpOpts, MatrixError, MatrixHttpApi, Method } from "../http-api";
-import { IToDeviceEvent } from "../sync-accumulator";
-import { ServerSideSecretStorage } from "../secret-storage";
-import { crypto } from "../crypto/crypto";
-import { decodeBase64, encodeUnpaddedBase64 } from "../base64";
-import { Logger } from "../logger";
+import { OutgoingRequestProcessor } from "./OutgoingRequestProcessor.ts";
+import { encodeUri } from "../utils.ts";
+import { IHttpOpts, MatrixError, MatrixHttpApi, Method } from "../http-api/index.ts";
+import { IToDeviceEvent } from "../sync-accumulator.ts";
+import { ServerSideSecretStorage } from "../secret-storage.ts";
+import { decodeBase64, encodeUnpaddedBase64 } from "../base64.ts";
+import { Logger } from "../logger.ts";
 
 /**
  * The response body of `GET /_matrix/client/unstable/org.matrix.msc3814.v1/dehydrated_device`.
@@ -155,7 +154,7 @@ export class DehydratedDeviceManager {
      */
     public async resetKey(): Promise<void> {
         const key = new Uint8Array(32);
-        crypto.getRandomValues(key);
+        globalThis.crypto.getRandomValues(key);
         await this.secretStorage.store(SECRET_STORAGE_NAME, encodeUnpaddedBase64(key));
         this.key = key;
     }

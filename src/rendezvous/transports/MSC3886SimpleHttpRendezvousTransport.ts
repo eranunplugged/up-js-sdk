@@ -16,16 +16,16 @@ limitations under the License.
 
 import { UnstableValue } from "matrix-events-sdk";
 
-import { logger } from "../../logger";
-import { sleep } from "../../utils";
+import { logger } from "../../logger.ts";
+import { sleep } from "../../utils.ts";
 import {
     RendezvousFailureListener,
-    RendezvousFailureReason,
+    LegacyRendezvousFailureReason as RendezvousFailureReason,
     RendezvousTransport,
     RendezvousTransportDetails,
-} from "..";
-import { MatrixClient } from "../../matrix";
-import { ClientPrefix } from "../../http-api";
+} from "../index.ts";
+import { MatrixClient } from "../../matrix.ts";
+import { ClientPrefix } from "../../http-api/index.ts";
 
 const TYPE = new UnstableValue("http.v1", "org.matrix.msc3886.http.v1");
 
@@ -37,6 +37,9 @@ export interface MSC3886SimpleHttpRendezvousTransportDetails extends RendezvousT
  * Implementation of the unstable [MSC3886](https://github.com/matrix-org/matrix-spec-proposals/pull/3886)
  * simple HTTP rendezvous protocol.
  * Note that this is UNSTABLE and may have breaking changes without notice.
+ * MSC3886/MSC3903/MSC3906 are now closed and so this functionality will be removed in future.
+ * However, we want to keep this implementation around for some time.
+ * TODO: define an end-of-life date for this implementation.
  */
 export class MSC3886SimpleHttpRendezvousTransport<T extends {}> implements RendezvousTransport<T> {
     private uri?: string;

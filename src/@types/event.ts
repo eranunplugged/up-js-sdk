@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-import { UnstableValue } from "../NamespacedValue";
+import { NamespacedValue, UnstableValue } from "../NamespacedValue.ts";
 import {
     PolicyRuleEventContent,
     RoomAvatarEventContent,
@@ -34,16 +34,16 @@ import {
     RoomTopicEventContent,
     SpaceChildEventContent,
     SpaceParentEventContent,
-} from "./state_events";
+} from "./state_events.ts";
 import {
     ExperimentalGroupCallRoomMemberState,
     IGroupCallRoomMemberState,
     IGroupCallRoomState,
-} from "../webrtc/groupCall";
-import { MSC3089EventContent } from "../models/MSC3089Branch";
-import { M_BEACON, M_BEACON_INFO, MBeaconEventContent, MBeaconInfoEventContent } from "./beacon";
-import { XOR } from "./common";
-import { ReactionEventContent, RoomMessageEventContent, StickerEventContent } from "./events";
+} from "../webrtc/groupCall.ts";
+import { MSC3089EventContent } from "../models/MSC3089Branch.ts";
+import { M_BEACON, M_BEACON_INFO, MBeaconEventContent, MBeaconInfoEventContent } from "./beacon.ts";
+import { XOR } from "./common.ts";
+import { ReactionEventContent, RoomMessageEventContent, StickerEventContent } from "./events.ts";
 import {
     MCallAnswer,
     MCallBase,
@@ -54,9 +54,10 @@ import {
     MCallSelectAnswer,
     SDPStreamMetadata,
     SDPStreamMetadataKey,
-} from "../webrtc/callEventTypes";
-import { EncryptionKeysEventContent, ICallNotifyContent } from "../matrixrtc/types";
-import { M_POLL_END, M_POLL_START, PollEndEventContent, PollStartEventContent } from "./polls";
+} from "../webrtc/callEventTypes.ts";
+import { EncryptionKeysEventContent, ICallNotifyContent } from "../matrixrtc/types.ts";
+import { M_POLL_END, M_POLL_START, PollEndEventContent, PollStartEventContent } from "./polls.ts";
+import { SessionMembershipData } from "../matrixrtc/CallMembership.ts";
 
 export enum EventType {
     // Room state events
@@ -302,7 +303,7 @@ export const UNSIGNED_THREAD_ID_FIELD = new UnstableValue("thread_id", "org.matr
  *
  * @experimental
  */
-export const UNSIGNED_MEMBERSHIP_FIELD = new UnstableValue("membership", "io.element.msc4115.membership");
+export const UNSIGNED_MEMBERSHIP_FIELD = new NamespacedValue("membership", "io.element.msc4115.membership");
 
 /**
  * Mapped type from event type to content type for all specified non-state room events.
@@ -356,7 +357,10 @@ export interface StateEvents {
 
     // MSC3401
     [EventType.GroupCallPrefix]: IGroupCallRoomState;
-    [EventType.GroupCallMemberPrefix]: XOR<IGroupCallRoomMemberState, ExperimentalGroupCallRoomMemberState>;
+    [EventType.GroupCallMemberPrefix]: XOR<
+        XOR<IGroupCallRoomMemberState, ExperimentalGroupCallRoomMemberState>,
+        XOR<SessionMembershipData, {}>
+    >;
 
     // MSC3089
     [UNSTABLE_MSC3089_BRANCH.name]: MSC3089EventContent;

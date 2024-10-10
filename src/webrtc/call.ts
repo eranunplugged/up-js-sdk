@@ -24,12 +24,12 @@ limitations under the License.
 import { v4 as uuidv4 } from "uuid";
 import { parse as parseSdp, write as writeSdp } from "sdp-transform";
 
-import { logger } from "../logger";
-import { checkObjectHasKeys, isNullOrUndefined, recursivelyAssign } from "../utils";
-import { MatrixEvent } from "../models/event";
-import { EventType, TimelineEvents, ToDeviceMessageId } from "../@types/event";
-import { RoomMember } from "../models/room-member";
-import { randomString } from "../randomstring";
+import { logger } from "../logger.ts";
+import { checkObjectHasKeys, isNullOrUndefined, recursivelyAssign } from "../utils.ts";
+import { MatrixEvent } from "../models/event.ts";
+import { EventType, TimelineEvents, ToDeviceMessageId } from "../@types/event.ts";
+import { RoomMember } from "../models/room-member.ts";
+import { randomString } from "../randomstring.ts";
 import {
     MCallReplacesEvent,
     MCallAnswer,
@@ -44,15 +44,15 @@ import {
     MCallCandidates,
     MCallBase,
     MCallHangupReject,
-} from "./callEventTypes";
-import { CallFeed } from "./callFeed";
-import { MatrixClient } from "../client";
-import { EventEmitterEvents, TypedEventEmitter } from "../models/typed-event-emitter";
-import { DeviceInfo } from "../crypto/deviceinfo";
-import { GroupCallUnknownDeviceError } from "./groupCall";
-import { IScreensharingOpts } from "./mediaHandler";
-import { MatrixError } from "../http-api";
-import { GroupCallStats } from "./stats/groupCallStats";
+} from "./callEventTypes.ts";
+import { CallFeed } from "./callFeed.ts";
+import { MatrixClient } from "../client.ts";
+import { EventEmitterEvents, TypedEventEmitter } from "../models/typed-event-emitter.ts";
+import { DeviceInfo } from "../crypto/deviceinfo.ts";
+import { GroupCallUnknownDeviceError } from "./groupCall.ts";
+import { IScreensharingOpts } from "./mediaHandler.ts";
+import { MatrixError } from "../http-api/index.ts";
+import { GroupCallStats } from "./stats/groupCallStats.ts";
 
 interface CallOpts {
     // The room ID for this call.
@@ -2024,7 +2024,7 @@ export class MatrixCall extends TypedEventEmitter<CallEvent, CallEventHandlerMap
 
                 this.sendVoipEvent(EventType.CallNegotiate, {
                     lifetime: CALL_TIMEOUT_MS,
-                    description: this.peerConn!.localDescription?.toJSON(),
+                    description: this.peerConn!.localDescription?.toJSON() as RTCSessionDescription,
                     [SDPStreamMetadataKey]: this.getLocalSDPStreamMetadata(true),
                 });
             }
@@ -2152,9 +2152,9 @@ export class MatrixCall extends TypedEventEmitter<CallEvent, CallEventHandlerMap
 
         // clunky because TypeScript can't follow the types through if we use an expression as the key
         if (this.state === CallState.CreateOffer) {
-            content.offer = this.peerConn!.localDescription?.toJSON();
+            content.offer = this.peerConn!.localDescription?.toJSON() as RTCSessionDescription;
         } else {
-            content.description = this.peerConn!.localDescription?.toJSON();
+            content.description = this.peerConn!.localDescription?.toJSON() as RTCSessionDescription;
         }
 
         content.capabilities = {
@@ -2381,22 +2381,40 @@ export class MatrixCall extends TypedEventEmitter<CallEvent, CallEventHandlerMap
         // RTCRtpReceiver.getCapabilities and RTCRtpSender.getCapabilities don't seem to be supported on FF before v113
         if (!RTCRtpReceiver.getCapabilities || !RTCRtpSender.getCapabilities) return;
 
-        const recvCodecs = RTCRtpReceiver.getCapabilities("video")!.codecs;
-        const sendCodecs = RTCRtpSender.getCapabilities("video")!.codecs;
-        const codecs = [...sendCodecs, ...recvCodecs];
-
-        for (const codec of codecs) {
-            if (codec.mimeType === "video/rtx") {
-                const rtxCodecIndex = codecs.indexOf(codec);
-                codecs.splice(rtxCodecIndex, 1);
-            }
-        }
-
         const screenshareVideoTransceiver = this.transceivers.get(
             getTransceiverKey(SDPStreamMetadataPurpose.Screenshare, "video"),
         );
+
         // setCodecPreferences isn't supported on FF (as of v113)
-        screenshareVideoTransceiver?.setCodecPreferences?.(codecs);
+        if (!screenshareVideoTransceiver || !screenshareVideoTransceiver.setCodecPreferences) return;
+
+        const recvCodecs = RTCRtpReceiver.getCapabilities("video")!.codecs;
+        const sendCodecs = RTCRtpSender.getCapabilities("video")!.codecs;
+        const codecs = [];
+
+        for (const codec of [...recvCodecs, ...sendCodecs]) {
+            if (codec.mimeType !== "video/rtx") {
+                codecs.push(codec);
+                try {
+                    screenshareVideoTransceiver.setCodecPreferences(codecs);
+                } catch (e) {
+                    // Specifically, Chrome around version 125 and Electron 30 (which is Chromium 124) return an H.264 codec in
+                    // the sender's capabilities but throw when you try to set it. Hence... this mess.
+                    // Specifically, that codec is:
+                    // {
+                    //   clockRate: 90000,
+                    //   mimeType: "video/H264",
+                    //   sdpFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640034",
+                    // }
+                    logger.info(
+                        "Working around buggy WebRTC impl: claimed to support codec but threw when setting codec preferences",
+                        codec,
+                        e,
+                    );
+                    codecs.pop();
+                }
+            }
+        }
     }
 
     private onNegotiationNeeded = async (): Promise<void> => {
