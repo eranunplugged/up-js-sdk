@@ -526,7 +526,7 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
                 this.threadsTimelineSets[0] = timelineSets[0];
                 this.threadsTimelineSets[1] = timelineSets[1];
                 return timelineSets;
-            } catch (e) {
+            } catch {
                 this.threadTimelineSetsPromise = null;
                 return null;
             }
@@ -620,7 +620,7 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
         let capabilities: Capabilities = {};
         try {
             capabilities = await this.client.getCapabilities();
-        } catch (e) {}
+        } catch {}
         let versionCap = capabilities["m.room_versions"];
         if (!versionCap) {
             versionCap = {

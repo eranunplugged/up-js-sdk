@@ -38,6 +38,7 @@ import { MatrixError } from "../http-api/errors.ts";
 import { MatrixEvent } from "../models/event.ts";
 import { isLivekitFocusActive } from "./LivekitFocus.ts";
 import { ExperimentalGroupCallRoomMemberState } from "../webrtc/groupCall.ts";
+import { sleep } from "../utils.ts";
 
 const logger = rootLogger.getChild("MatrixRTCSession");
 
@@ -139,6 +140,8 @@ export class MatrixRTCSession extends TypedEventEmitter<MatrixRTCSessionEvent, M
     // userId:deviceId => array of (key, timestamp)
     private encryptionKeys = new Map<string, Array<{ key: Uint8Array; timestamp: number }>>();
     private lastEncryptionKeyUpdateRequest?: number;
+
+    private disconnectDelayId: string | undefined;
 
     // We use this to store the last membership fingerprints we saw, so we can proactively re-send encryption keys
     // if it looks like a membership has been updated.
@@ -325,7 +328,7 @@ export class MatrixRTCSession extends TypedEventEmitter<MatrixRTCSessionEvent, M
         logger.info(`Joining call session in room ${this.room.roomId} with manageMediaKeys=${this.manageMediaKeys}`);
         if (joinConfig?.manageMediaKeys) {
             this.makeNewSenderKey();
-            this.requestKeyEventSend();
+            this.requestSendCurrentKey();
         }
         // We don't wait for this, mostly because it may fail and schedule a retry, so this
         // function returning doesn't really mean anything at all.
@@ -341,11 +344,12 @@ export class MatrixRTCSession extends TypedEventEmitter<MatrixRTCSessionEvent, M
      * The membership update required to leave the session will retry if it fails.
      * Without network connection the promise will never resolve.
      * A timeout can be provided so that there is a guarantee for the promise to resolve.
+     * @returns Whether the membership update was attempted and did not time out.
      */
     public async leaveRoomSession(timeout: number | undefined = undefined): Promise<boolean> {
         if (!this.isJoined()) {
             logger.info(`Not joined to session in room ${this.room.roomId}: ignoring leave call`);
-            return new Promise((resolve) => resolve(false));
+            return false;
         }
 
         const userId = this.client.getUserId();
@@ -375,19 +379,15 @@ export class MatrixRTCSession extends TypedEventEmitter<MatrixRTCSessionEvent, M
         this.membershipId = undefined;
         this.emit(MatrixRTCSessionEvent.JoinStateChanged, false);
 
-        const timeoutPromise = new Promise((r) => {
-            if (timeout) {
-                // will never resolve if timeout is not set
-                setTimeout(r, timeout, "timeout");
-            }
-        });
-        return new Promise((resolve) => {
-            Promise.race([this.triggerCallMembershipEventUpdate(), timeoutPromise]).then((value) => {
-                // The timeoutPromise returns the string 'timeout' and the membership update void
-                // A success implies that the membership update was quicker then the timeout.
-                resolve(value != "timeout");
-            });
-        });
+        if (timeout) {
+            // The sleep promise returns the string 'timeout' and the membership update void
+            // A success implies that the membership update was quicker then the timeout.
+            const raceResult = await Promise.race([this.triggerCallMembershipEventUpdate(), sleep(timeout, "timeout")]);
+            return raceResult !== "timeout";
+        } else {
+            await this.triggerCallMembershipEventUpdate();
+            return true;
+        }
     }
 
     public getActiveFocus(): Focus | undefined {
@@ -448,13 +448,12 @@ export class MatrixRTCSession extends TypedEventEmitter<MatrixRTCSessionEvent, M
     }
 
     private getNewEncryptionKeyIndex(): number {
-        const userId = this.client.getUserId();
-        const deviceId = this.client.getDeviceId();
+        if (this.currentEncryptionKeyIndex === -1) {
+            return 0;
+        }
 
-        if (!userId) throw new Error("No userId!");
-        if (!deviceId) throw new Error("No deviceId!");
-
-        return (this.getKeysForParticipantInternal(userId, deviceId)?.length ?? 0) % 16;
+        // maximum key index is 255
+        return (this.currentEncryptionKeyIndex + 1) % 256;
     }
 
     /**
@@ -547,10 +546,10 @@ export class MatrixRTCSession extends TypedEventEmitter<MatrixRTCSessionEvent, M
     }
 
     /**
-     * Requests that we resend our keys to the room. May send a keys event immediately
+     * Requests that we resend our current keys to the room. May send a keys event immediately
      * or queue for alter if one has already been sent recently.
      */
-    private requestKeyEventSend(): void {
+    private requestSendCurrentKey(): void {
         if (!this.manageMediaKeys) return;
 
         if (
@@ -796,8 +795,8 @@ export class MatrixRTCSession extends TypedEventEmitter<MatrixRTCSessionEvent, M
                 logger.debug(`Member(s) have left: queueing sender key rotation`);
                 this.makeNewKeyTimeout = setTimeout(this.onRotateKeyTimeout, MAKE_KEY_DELAY);
             } else if (anyJoined) {
-                logger.debug(`New member(s) have joined: queueing sender key rotation`);
-                this.makeNewKeyTimeout = setTimeout(this.onRotateKeyTimeout, MAKE_KEY_DELAY);
+                logger.debug(`New member(s) have joined: re-sending keys`);
+                this.requestSendCurrentKey();
             } else if (oldFingerprints) {
                 // does it look like any of the members have updated their memberships?
                 const newFingerprints = this.lastMembershipFingerprints!;
@@ -809,7 +808,7 @@ export class MatrixRTCSession extends TypedEventEmitter<MatrixRTCSessionEvent, M
                     Array.from(newFingerprints).some((x) => !oldFingerprints.has(x));
                 if (candidateUpdates) {
                     logger.debug(`Member(s) have updated/reconnected: re-sending keys to everyone`);
-                    this.requestKeyEventSend();
+                    this.requestSendCurrentKey();
                 }
             }
         }
@@ -912,7 +911,7 @@ export class MatrixRTCSession extends TypedEventEmitter<MatrixRTCSessionEvent, M
             let membershipObj;
             try {
                 membershipObj = new CallMembership(myCallMemberEvent!, m);
-            } catch (e) {
+            } catch {
                 return false;
             }
 
@@ -1012,19 +1011,24 @@ export class MatrixRTCSession extends TypedEventEmitter<MatrixRTCSessionEvent, M
             newContent = this.makeNewMembership(localDeviceId);
         }
 
-        const stateKey = legacy ? localUserId : this.makeMembershipStateKey(localUserId, localDeviceId);
         try {
-            await this.client.sendStateEvent(this.room.roomId, EventType.GroupCallMemberPrefix, newContent, stateKey);
-            logger.info(`Sent updated call member event.`);
-
-            // check periodically to see if we need to refresh our member event
-            if (this.isJoined()) {
-                if (legacy) {
+            if (legacy) {
+                await this.client.sendStateEvent(
+                    this.room.roomId,
+                    EventType.GroupCallMemberPrefix,
+                    newContent,
+                    localUserId,
+                );
+                if (this.isJoined()) {
+                    // check periodically to see if we need to refresh our member event
                     this.memberEventTimeout = setTimeout(
                         this.triggerCallMembershipEventUpdate,
                         MEMBER_EVENT_CHECK_PERIOD,
                     );
-                } else {
+                }
+            } else if (this.isJoined()) {
+                const stateKey = this.makeMembershipStateKey(localUserId, localDeviceId);
+                const prepareDelayedDisconnection = async (): Promise<void> => {
                     try {
                         // TODO: If delayed event times out, re-join!
                         const res = await this.client._unstable_sendDelayedStateEvent(
@@ -1036,32 +1040,84 @@ export class MatrixRTCSession extends TypedEventEmitter<MatrixRTCSessionEvent, M
                             {}, // leave event
                             stateKey,
                         );
-                        this.scheduleDelayDisconnection(res.delay_id);
+                        this.disconnectDelayId = res.delay_id;
                     } catch (e) {
-                        logger.error("Failed to send delayed event:", e);
+                        // TODO: Retry if rate-limited
+                        logger.error("Failed to prepare delayed disconnection event:", e);
+                    }
+                };
+                await prepareDelayedDisconnection();
+                // Send join event _after_ preparing the delayed disconnection event
+                await this.client.sendStateEvent(
+                    this.room.roomId,
+                    EventType.GroupCallMemberPrefix,
+                    newContent,
+                    stateKey,
+                );
+                // If sending state cancels your own delayed state, prepare another delayed state
+                // TODO: Remove this once MSC4140 is stable & doesn't cancel own delayed state
+                if (this.disconnectDelayId !== undefined) {
+                    try {
+                        await this.client._unstable_updateDelayedEvent(
+                            this.disconnectDelayId,
+                            UpdateDelayedEventAction.Restart,
+                        );
+                    } catch (e) {
+                        // TODO: Make embedded client include errcode, and retry only if not M_NOT_FOUND (or rate-limited)
+                        logger.warn("Failed to update delayed disconnection event, prepare it again:", e);
+                        this.disconnectDelayId = undefined;
+                        await prepareDelayedDisconnection();
                     }
                 }
+                if (this.disconnectDelayId !== undefined) {
+                    this.scheduleDelayDisconnection();
+                }
+            } else {
+                let sentDelayedDisconnect = false;
+                if (this.disconnectDelayId !== undefined) {
+                    try {
+                        await this.client._unstable_updateDelayedEvent(
+                            this.disconnectDelayId,
+                            UpdateDelayedEventAction.Send,
+                        );
+                        sentDelayedDisconnect = true;
+                    } catch (e) {
+                        // TODO: Retry if rate-limited
+                        logger.error("Failed to send our delayed disconnection event:", e);
+                    }
+                    this.disconnectDelayId = undefined;
+                }
+                if (!sentDelayedDisconnect) {
+                    await this.client.sendStateEvent(
+                        this.room.roomId,
+                        EventType.GroupCallMemberPrefix,
+                        {},
+                        this.makeMembershipStateKey(localUserId, localDeviceId),
+                    );
+                }
             }
+            logger.info("Sent updated call member event.");
         } catch (e) {
             const resendDelay = CALL_MEMBER_EVENT_RETRY_DELAY_MIN + Math.random() * 2000;
             logger.warn(`Failed to send call member event (retrying in ${resendDelay}): ${e}`);
-            await new Promise((resolve) => setTimeout(resolve, resendDelay));
+            await sleep(resendDelay);
             await this.triggerCallMembershipEventUpdate();
         }
     }
 
-    private scheduleDelayDisconnection(delayId: string): void {
-        this.memberEventTimeout = setTimeout(() => this.delayDisconnection(delayId), 5000);
+    private scheduleDelayDisconnection(): void {
+        this.memberEventTimeout = setTimeout(this.delayDisconnection, 5000);
     }
 
-    private async delayDisconnection(delayId: string): Promise<void> {
+    private readonly delayDisconnection = async (): Promise<void> => {
         try {
-            await this.client._unstable_updateDelayedEvent(delayId, UpdateDelayedEventAction.Restart);
-            this.scheduleDelayDisconnection(delayId);
+            await this.client._unstable_updateDelayedEvent(this.disconnectDelayId!, UpdateDelayedEventAction.Restart);
+            this.scheduleDelayDisconnection();
         } catch (e) {
-            logger.error("Failed to delay our disconnection event", e);
+            // TODO: Retry if rate-limited
+            logger.error("Failed to delay our disconnection event:", e);
         }
-    }
+    };
 
     private stateEventsContainOngoingLegacySession(callMemberEvents: Map<string, MatrixEvent> | undefined): boolean {
         if (!callMemberEvents?.size) {
