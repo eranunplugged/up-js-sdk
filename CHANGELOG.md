@@ -1,3 +1,32 @@
+Changes in [34.12.0](https://github.com/matrix-org/matrix-js-sdk/releases/tag/v34.12.0) (2024-11-19)
+====================================================================================================
+## 🦖 Deprecations
+
+* Deprecate `MatrixClient.getKeyBackupVersion` ([#4505](https://github.com/matrix-org/matrix-js-sdk/pull/4505)). Contributed by @florianduros.
+* Deprecate unused callbacks in `CryptoCallbacks` ([#4501](https://github.com/matrix-org/matrix-js-sdk/pull/4501)). Contributed by @florianduros.
+
+## ✨ Features
+
+* Handle M\_MAX\_DELAY\_EXCEEDED errors ([#4511](https://github.com/matrix-org/matrix-js-sdk/pull/4511)). Contributed by @AndrewFerr.
+* Allow configuration of MatrixRTC timers when calling joinRoomSession() ([#4510](https://github.com/matrix-org/matrix-js-sdk/pull/4510)). Contributed by @hughns.
+* When state says you've left ongoing call, rejoin ([#4342](https://github.com/matrix-org/matrix-js-sdk/pull/4342)). Contributed by @AndrewFerr.
+* Remove redundant type arguments in function call ([#4507](https://github.com/matrix-org/matrix-js-sdk/pull/4507)). Contributed by @AndrewFerr.
+* MatrixRTCSession: handle rate limit errors ([#4494](https://github.com/matrix-org/matrix-js-sdk/pull/4494)). Contributed by @AndrewFerr.
+* Send/receive error details with widgets ([#4492](https://github.com/matrix-org/matrix-js-sdk/pull/4492)). Contributed by @AndrewFerr.
+* Capture HTTP error response headers \& handle Retry-After header (MSC4041) ([#4471](https://github.com/matrix-org/matrix-js-sdk/pull/4471)). Contributed by @AndrewFerr.
+* Add RoomWidgetClient.sendToDeviceViaWidgetApi() ([#4475](https://github.com/matrix-org/matrix-js-sdk/pull/4475)). Contributed by @hughns.
+
+
+Changes in [34.11.1](https://github.com/matrix-org/matrix-js-sdk/releases/tag/v34.11.1) (2024-11-12)
+====================================================================================================
+# Security
+- Fixes for [CVE-2024-50336](https://nvd.nist.gov/vuln/detail/CVE-2024-50336) / [GHSA-xvg8-m4x3-w6xr](https://github.com/matrix-org/matrix-js-sdk/security/advisories/GHSA-xvg8-m4x3-w6xr).
+
+Changes in [34.11.0](https://github.com/matrix-org/matrix-js-sdk/releases/tag/v34.11.0) (2024-11-12)
+====================================================================================================
+# Security
+- Fixes for [CVE-2024-50336](https://nvd.nist.gov/vuln/detail/CVE-2024-50336) / [GHSA-xvg8-m4x3-w6xr](https://github.com/matrix-org/matrix-js-sdk/security/advisories/GHSA-xvg8-m4x3-w6xr).
+
 Changes in [34.10.0](https://github.com/matrix-org/matrix-js-sdk/releases/tag/v34.10.0) (2024-11-05)
 ====================================================================================================
 ## 🦖 Deprecations

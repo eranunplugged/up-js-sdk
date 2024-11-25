@@ -136,7 +136,9 @@ jobs:
                   done
 
             - name: Bump package.json version
-              run: yarn version --no-git-tag-version --new-version "${VERSION#v}"
+              run: |
+                  yarn version --no-git-tag-version --new-version "${VERSION#v}"
+                  git add package.json
 
             - name: Add to CHANGELOG.md
               if: inputs.final
@@ -157,11 +159,6 @@ jobs:
                   git add CHANGELOG.md
               env:
                   RELEASE_NOTES: ${{ steps.draft-release.outputs.body }}
-
-            - name: Run pre-release script to update package.json fields
-              run: |
-                  ./.action-repo/scripts/release/pre-release.sh
-                  git add package.json
 
             - name: Commit changes
               run: git commit -m "$VERSION"

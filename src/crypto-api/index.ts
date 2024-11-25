@@ -274,7 +274,13 @@ export interface CryptoApi {
     isCrossSigningReady(): Promise<boolean>;
 
     /**
-     * Get the ID of one of the user's cross-signing keys.
+     * Get the ID of one of the user's cross-signing keys, if both private and matching
+     * public parts of that key are available (ie. cached in the local crypto store).
+     *
+     * The public part may not be available if a `/keys/query` request has not yet been
+     * performed, or if the device that created the keys failed to publish them.
+     *
+     * If either part of the keypair is not available, this will return `null`.
      *
      * @param type - The type of key to get the ID of.  One of `CrossSigningKey.Master`, `CrossSigningKey.SelfSigning`,
      *     or `CrossSigningKey.UserSigning`.  Defaults to `CrossSigningKey.Master`.
@@ -932,8 +938,11 @@ export interface CrossSigningStatus {
  * Crypto callbacks provided by the application
  */
 export interface CryptoCallbacks extends SecretStorageCallbacks {
+    /** @deprecated: unused with the Rust crypto stack. */
     getCrossSigningKey?: (keyType: string, pubKey: string) => Promise<Uint8Array | null>;
+    /** @deprecated: unused with the Rust crypto stack. */
     saveCrossSigningKeys?: (keys: Record<string, Uint8Array>) => void;
+    /** @deprecated: unused with the Rust crypto stack. */
     shouldUpgradeDeviceVerifications?: (users: Record<string, any>) => Promise<string[]>;
     /**
      * Called by {@link CryptoApi#bootstrapSecretStorage}
@@ -958,6 +967,7 @@ export interface CryptoCallbacks extends SecretStorageCallbacks {
         checkFunc: (key: Uint8Array) => void,
     ) => Promise<Uint8Array>;
 
+    /** @deprecated: unused with the Rust crypto stack. */
     getBackupKey?: () => Promise<Uint8Array>;
 }
 
