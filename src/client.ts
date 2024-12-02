@@ -3367,7 +3367,10 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
                 "/room_keys/version",
                 undefined,
                 undefined,
-                { prefix: ClientPrefix.V3 },
+                { prefix: ClientPrefix.V3,
+                headers: {
+                    Authorization: "Bearer " + this.getAccessToken(),
+                }},
             );
         } catch (e) {
             if ((<MatrixError>e).errcode === "M_NOT_FOUND") {
