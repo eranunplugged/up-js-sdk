@@ -9484,19 +9484,7 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
                     }
                 })
         } else {
-        if (auth) {
-
-            console.log("AUTH", auth)
-            Object.assign(data, {auth: {
-                    type: "org.matrix.login.jwt",
-                    identifier: {
-                        type: "m.id.user",
-                        user: this.getUserId(),
-                    },
-                    user: this.getUserId(),
-                    token: localStorage.getItem('upToken'),
-                }});
-        }
+        if (auth) Object.assign(data, { auth });
         }
         return this.http.authedRequest(Method.Post, "/keys/device_signing/upload", undefined, data, {
             prefix: ClientPrefix.Unstable,
