@@ -169,7 +169,7 @@ export class EncryptionSetupOperation {
     /**
      * Runs the (remaining part of, in the future) operation by sending requests to the server.
      */
-    public async apply(crypto: Crypto): Promise<void> {
+    public async apply(crypto: Crypto, brand: string | undefined): Promise<void> {
         const baseApis = crypto.baseApis;
         // upload cross-signing keys
         if (this.crossSigningKeys) {
@@ -181,7 +181,7 @@ export class EncryptionSetupOperation {
             // We must only call `uploadDeviceSigningKeys` from inside this auth
             // helper to ensure we properly handle auth errors.
             await this.crossSigningKeys.authUpload?.((authDict) => {
-                return baseApis.uploadDeviceSigningKeys(authDict ?? undefined, keys as CrossSigningKeys);
+                return baseApis.uploadDeviceSigningKeys(authDict ?? undefined, keys as CrossSigningKeys, brand);
             });
 
             // pass the new keys to the main instance of our own CrossSigningInfo.
