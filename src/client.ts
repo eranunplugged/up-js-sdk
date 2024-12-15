@@ -8456,7 +8456,7 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
                 }
             }
         }
-
+        console.log('createRoom', options);
         return this.http.authedRequest(Method.Post, "/createRoom", undefined, options);
     }
 
