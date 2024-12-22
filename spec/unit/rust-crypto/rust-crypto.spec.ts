@@ -572,15 +572,37 @@ describe("RustCrypto", () => {
         });
 
         it("emits VerificationRequestReceived on incoming m.key.verification.request", async () => {
+            rustCrypto = await makeTestRustCrypto(
+                new MatrixHttpApi(new TypedEventEmitter<HttpApiEvent, HttpApiEventHandlerMap>(), {
+                    baseUrl: "http://server/",
+                    prefix: "",
+                    onlyData: true,
+                }),
+                testData.TEST_USER_ID,
+            );
+
+            fetchMock.post("path:/_matrix/client/v3/keys/upload", { one_time_key_counts: {} });
+            fetchMock.post("path:/_matrix/client/v3/keys/query", {
+                device_keys: {
+                    [testData.TEST_USER_ID]: {
+                        [testData.TEST_DEVICE_ID]: testData.SIGNED_TEST_DEVICE_DATA,
+                    },
+                },
+            });
+
+            // wait until we know about the other device
+            rustCrypto.onSyncCompleted({});
+            await rustCrypto.getUserDeviceInfo([testData.TEST_USER_ID]);
+
             const toDeviceEvent = {
                 type: "m.key.verification.request",
                 content: {
-                    from_device: "testDeviceId",
+                    from_device: testData.TEST_DEVICE_ID,
                     methods: ["m.sas.v1"],
                     transaction_id: "testTxn",
                     timestamp: Date.now() - 1000,
                 },
-                sender: "@user:id",
+                sender: testData.TEST_USER_ID,
             };
 
             const onEvent = jest.fn();
@@ -991,23 +1013,41 @@ describe("RustCrypto", () => {
         });
 
         it.each([
-            [undefined, null],
-            ["Encrypted by an unverified user.", EventShieldReason.UNVERIFIED_IDENTITY],
-            ["Encrypted by a device not verified by its owner.", EventShieldReason.UNSIGNED_DEVICE],
+            [undefined, undefined, null],
+            [
+                "Encrypted by an unverified user.",
+                RustSdkCryptoJs.ShieldStateCode.UnverifiedIdentity,
+                EventShieldReason.UNVERIFIED_IDENTITY,
+            ],
+            [
+                "Encrypted by a device not verified by its owner.",
+                RustSdkCryptoJs.ShieldStateCode.UnsignedDevice,
+                EventShieldReason.UNSIGNED_DEVICE,
+            ],
             [
                 "The authenticity of this encrypted message can't be guaranteed on this device.",
+                RustSdkCryptoJs.ShieldStateCode.AuthenticityNotGuaranteed,
                 EventShieldReason.AUTHENTICITY_NOT_GUARANTEED,
             ],
-            ["Encrypted by an unknown or deleted device.", EventShieldReason.UNKNOWN_DEVICE],
-            ["bloop", EventShieldReason.UNKNOWN],
-        ])("gets the right shield reason (%s)", async (rustReason, expectedReason) => {
+            [
+                "Encrypted by an unknown or deleted device.",
+                RustSdkCryptoJs.ShieldStateCode.UnknownDevice,
+                EventShieldReason.UNKNOWN_DEVICE,
+            ],
+            ["Not encrypted.", RustSdkCryptoJs.ShieldStateCode.SentInClear, EventShieldReason.SENT_IN_CLEAR],
+            [
+                "Encrypted by a previously-verified user who is no longer verified.",
+                RustSdkCryptoJs.ShieldStateCode.VerificationViolation,
+                EventShieldReason.VERIFICATION_VIOLATION,
+            ],
+        ])("gets the right shield reason (%s)", async (rustReason, rustCode, expectedReason) => {
             // suppress the warning from the unknown shield reason
             jest.spyOn(console, "warn").mockImplementation(() => {});
 
             const mockEncryptionInfo = {
                 shieldState: jest
                     .fn()
-                    .mockReturnValue({ color: RustSdkCryptoJs.ShieldColor.None, message: rustReason }),
+                    .mockReturnValue({ color: RustSdkCryptoJs.ShieldColor.None, code: rustCode, message: rustReason }),
             } as unknown as RustSdkCryptoJs.EncryptionInfo;
             olmMachine.getRoomEventEncryptionInfo.mockResolvedValue(mockEncryptionInfo);
 

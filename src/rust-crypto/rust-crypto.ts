@@ -329,7 +329,7 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
     /**
      * Implementation of {@link CryptoBackend#getBackupDecryptor}.
      */
-    public async getBackupDecryptor(backupInfo: KeyBackupInfo, privKey: ArrayLike<number>): Promise<BackupDecryptor> {
+    public async getBackupDecryptor(backupInfo: KeyBackupInfo, privKey: Uint8Array): Promise<BackupDecryptor> {
         if (!(privKey instanceof Uint8Array)) {
             throw new Error(`getBackupDecryptor: expects Uint8Array`);
         }
@@ -653,7 +653,7 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
      * Implementation of {@link CryptoApi#getUserVerificationStatus}.
      */
     public async getUserVerificationStatus(userId: string): Promise<UserVerificationStatus> {
-        const userIdentity: RustSdkCryptoJs.UserIdentity | RustSdkCryptoJs.OwnUserIdentity | undefined =
+        const userIdentity: RustSdkCryptoJs.OtherUserIdentity | RustSdkCryptoJs.OwnUserIdentity | undefined =
             await this.getOlmMachineOrThrow().getIdentity(new RustSdkCryptoJs.UserId(userId));
         if (userIdentity === undefined) {
             return new UserVerificationStatus(false, false, false);
@@ -662,7 +662,9 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
         const verified = userIdentity.isVerified();
         const wasVerified = userIdentity.wasPreviouslyVerified();
         const needsUserApproval =
-            userIdentity instanceof RustSdkCryptoJs.UserIdentity ? userIdentity.identityNeedsUserApproval() : false;
+            userIdentity instanceof RustSdkCryptoJs.OtherUserIdentity
+                ? userIdentity.identityNeedsUserApproval()
+                : false;
         userIdentity.free();
         return new UserVerificationStatus(verified, wasVerified, false, needsUserApproval);
     }
@@ -671,7 +673,7 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
      * Implementation of {@link CryptoApi#pinCurrentUserIdentity}.
      */
     public async pinCurrentUserIdentity(userId: string): Promise<void> {
-        const userIdentity: RustSdkCryptoJs.UserIdentity | RustSdkCryptoJs.OwnUserIdentity | undefined =
+        const userIdentity: RustSdkCryptoJs.OtherUserIdentity | RustSdkCryptoJs.OwnUserIdentity | undefined =
             await this.getOlmMachineOrThrow().getIdentity(new RustSdkCryptoJs.UserId(userId));
 
         if (userIdentity === undefined) {
@@ -1020,7 +1022,7 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
      * Implementation of {@link CryptoApi#requestVerificationDM}
      */
     public async requestVerificationDM(userId: string, roomId: string): Promise<VerificationRequest> {
-        const userIdentity: RustSdkCryptoJs.UserIdentity | undefined = await this.olmMachine.getIdentity(
+        const userIdentity: RustSdkCryptoJs.OtherUserIdentity | undefined = await this.olmMachine.getIdentity(
             new RustSdkCryptoJs.UserId(userId),
         );
 
@@ -1178,7 +1180,7 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
     public async getSessionBackupPrivateKey(): Promise<Uint8Array | null> {
         const backupKeys: RustSdkCryptoJs.BackupKeys = await this.olmMachine.getBackupKeys();
         if (!backupKeys.decryptionKey) return null;
-        return Buffer.from(backupKeys.decryptionKey.toBase64(), "base64");
+        return decodeBase64(backupKeys.decryptionKey.toBase64());
     }
 
     /**
@@ -2035,7 +2037,7 @@ class EventDecryptor {
                     errorDetails,
                 );
 
-            case RustSdkCryptoJs.DecryptionErrorCode.SenderIdentityPreviouslyVerified:
+            case RustSdkCryptoJs.DecryptionErrorCode.SenderIdentityVerificationViolation:
                 // We're refusing to decrypt due to not trusting the sender,
                 // rather than failing to decrypt due to lack of keys, so we
                 // don't need to keep it on the pending list.
@@ -2180,22 +2182,29 @@ function rustEncryptionInfoToJsEncryptionInfo(
     }
 
     let shieldReason: EventShieldReason | null;
-    if (shieldState.message === undefined) {
-        shieldReason = null;
-    } else if (shieldState.message === "Encrypted by an unverified user.") {
-        // this case isn't actually used with lax shield semantics.
-        shieldReason = EventShieldReason.UNVERIFIED_IDENTITY;
-    } else if (shieldState.message === "Encrypted by a device not verified by its owner.") {
-        shieldReason = EventShieldReason.UNSIGNED_DEVICE;
-    } else if (
-        shieldState.message === "The authenticity of this encrypted message can't be guaranteed on this device."
-    ) {
-        shieldReason = EventShieldReason.AUTHENTICITY_NOT_GUARANTEED;
-    } else if (shieldState.message === "Encrypted by an unknown or deleted device.") {
-        shieldReason = EventShieldReason.UNKNOWN_DEVICE;
-    } else {
-        logger.warn(`Unknown shield state message '${shieldState.message}'`);
-        shieldReason = EventShieldReason.UNKNOWN;
+    switch (shieldState.code) {
+        case undefined:
+        case null:
+            shieldReason = null;
+            break;
+        case RustSdkCryptoJs.ShieldStateCode.AuthenticityNotGuaranteed:
+            shieldReason = EventShieldReason.AUTHENTICITY_NOT_GUARANTEED;
+            break;
+        case RustSdkCryptoJs.ShieldStateCode.UnknownDevice:
+            shieldReason = EventShieldReason.UNKNOWN_DEVICE;
+            break;
+        case RustSdkCryptoJs.ShieldStateCode.UnsignedDevice:
+            shieldReason = EventShieldReason.UNSIGNED_DEVICE;
+            break;
+        case RustSdkCryptoJs.ShieldStateCode.UnverifiedIdentity:
+            shieldReason = EventShieldReason.UNVERIFIED_IDENTITY;
+            break;
+        case RustSdkCryptoJs.ShieldStateCode.SentInClear:
+            shieldReason = EventShieldReason.SENT_IN_CLEAR;
+            break;
+        case RustSdkCryptoJs.ShieldStateCode.VerificationViolation:
+            shieldReason = EventShieldReason.VERIFICATION_VIOLATION;
+            break;
     }
 
     return { shieldColour, shieldReason };
