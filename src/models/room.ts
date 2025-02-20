@@ -641,7 +641,7 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
             // the capability we're using to determine this.
             logger.warn(
                 "Refreshing room version capability because the server looks " +
-                    "to be supporting a newer room version we don't know about.",
+                "to be supporting a newer room version we don't know about.",
             );
 
             try {
@@ -1139,10 +1139,10 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
         const mostRecentEventInTimeline = eventsBefore[eventsBefore.length - 1];
         logger.log(
             `[refreshLiveTimeline for ${this.roomId}] at ` +
-                `mostRecentEventInTimeline=${mostRecentEventInTimeline && mostRecentEventInTimeline.getId()} ` +
-                `liveTimelineBefore=${liveTimelineBefore.toString()} ` +
-                `forwardPaginationToken=${forwardPaginationToken} ` +
-                `backwardPaginationToken=${backwardPaginationToken}`,
+            `mostRecentEventInTimeline=${mostRecentEventInTimeline && mostRecentEventInTimeline.getId()} ` +
+            `liveTimelineBefore=${liveTimelineBefore.toString()} ` +
+            `forwardPaginationToken=${forwardPaginationToken} ` +
+            `backwardPaginationToken=${backwardPaginationToken}`,
         );
 
         // Get the main TimelineSet
@@ -1208,8 +1208,8 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
         } else {
             logger.log(
                 `[refreshLiveTimeline for ${this.roomId}] \`/sync\` or some other request beat us to creating a new ` +
-                    `live timeline after we reset it. We'll use that instead since any events in the scrollback from ` +
-                    `this timeline will include the history.`,
+                `live timeline after we reset it. We'll use that instead since any events in the scrollback from ` +
+                `this timeline will include the history.`,
             );
         }
 
@@ -2772,7 +2772,7 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
     public updatePendingEvent(event: MatrixEvent, newStatus: EventStatus, newEventId?: string): void {
         logger.log(
             `setting pendingEvent status to ${newStatus} in ${event.getRoomId()} ` +
-                `event ID ${event.getId()} -> ${newEventId}`,
+            `event ID ${event.getId()} -> ${newEventId}`,
         );
 
         // if the message was sent, we expect an event id
@@ -2875,11 +2875,11 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
             if (liveTimeline.getPaginationToken(EventTimeline.FORWARDS)) {
                 throw new Error(
                     "live timeline " +
-                        i +
-                        " is no longer live - it has a pagination token " +
-                        "(" +
-                        liveTimeline.getPaginationToken(EventTimeline.FORWARDS) +
-                        ")",
+                    i +
+                    " is no longer live - it has a pagination token " +
+                    "(" +
+                    liveTimeline.getPaginationToken(EventTimeline.FORWARDS) +
+                    ")",
                 );
             }
             if (liveTimeline.getNeighbouringTimeline(EventTimeline.FORWARDS)) {
@@ -3281,6 +3281,10 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
         return canInvite;
     }
 
+    public canRemoveRoom(userId: string): boolean {
+        const me = this.getMember(userId)
+        return me?.powerLevel==100;
+    }
     /**
      * Returns the join rule based on the m.room.join_rule state event, defaulting to `invite`.
      * @returns the join_rule applied to this room

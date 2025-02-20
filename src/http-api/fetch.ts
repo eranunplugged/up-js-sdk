@@ -74,6 +74,7 @@ export class FetchHttpApi<O extends IHttpOpts> {
         params: Record<string, string | string[]> | undefined,
         prefix: string,
         accessToken?: string,
+        upToken?: string
     ): Promise<ResponseType<T, O>> {
         if (!this.opts.idBaseUrl) {
             throw new Error("No identity server base URL set");
@@ -134,6 +135,7 @@ export class FetchHttpApi<O extends IHttpOpts> {
         body?: Body,
         paramOpts: IRequestOpts & { doNotAttemptTokenRefresh?: boolean } = {},
     ): Promise<ResponseType<T, O>> {
+
         if (!queryParams) queryParams = {};
 
         // avoid mutating paramOpts so they can be used on retry
@@ -153,6 +155,10 @@ export class FetchHttpApi<O extends IHttpOpts> {
             } else if (!queryParams.access_token) {
                 queryParams.access_token = this.opts.accessToken;
             }
+        }
+        if (opts.upToken) {
+            opts.headers = {};
+            opts.headers.Authorization = "Bearer " + opts.upToken;
         }
 
         try {

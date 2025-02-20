@@ -825,6 +825,8 @@ export interface BootstrapCrossSigningOpts {
      * will not be uploaded to the server (which seems like a bad thing?).
      */
     authUploadDeviceSigningKeys?: UIAuthCallback<void>;
+
+    brand?: string;
 }
 
 /**
@@ -1137,6 +1139,8 @@ export interface CreateSecretStorageOpts {
      * @deprecated Not used by the Rust crypto stack.
      */
     getKeyBackupPassphrase?: () => Promise<Uint8Array>;
+
+    brand?: string;
 }
 
 /** Types of cross-signing key */

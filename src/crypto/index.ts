@@ -689,7 +689,7 @@ export class Crypto extends TypedEventEmitter<CryptoEvent, CryptoEventHandlerMap
                 };
             } else {
                 decryption.generate_key();
-                const privateKey = decryption.get_private_key();
+            const privateKey = decryption.get_private_key();
                 return {
                     privateKey: privateKey,
                     encodedPrivateKey: encodeRecoveryKey(privateKey),
@@ -798,6 +798,7 @@ export class Crypto extends TypedEventEmitter<CryptoEvent, CryptoEventHandlerMap
     public async bootstrapCrossSigning({
         authUploadDeviceSigningKeys,
         setupNewCrossSigning,
+        brand
     }: BootstrapCrossSigningOpts = {}): Promise<void> {
         logger.log("Bootstrapping cross-signing");
 
@@ -884,7 +885,7 @@ export class Crypto extends TypedEventEmitter<CryptoEvent, CryptoEventHandlerMap
         }
 
         const operation = builder.buildOperation();
-        await operation.apply(this);
+        await operation.apply(this, brand);
         // This persists private keys and public keys as trusted,
         // only do this if apply succeeded for now as retry isn't in place yet
         await builder.persist(this);
@@ -910,6 +911,7 @@ export class Crypto extends TypedEventEmitter<CryptoEvent, CryptoEventHandlerMap
      * Returns:
      *     A promise which resolves to key creation data for
      *     SecretStorage#addKey: an object with `passphrase` etc fields.
+     * @param brand
      */
     // TODO this does not resolve with what it says it does
     public async bootstrapSecretStorage({
@@ -918,6 +920,7 @@ export class Crypto extends TypedEventEmitter<CryptoEvent, CryptoEventHandlerMap
         setupNewKeyBackup,
         setupNewSecretStorage,
         getKeyBackupPassphrase,
+        brand,
     }: ICreateSecretStorageOpts = {}): Promise<void> {
         logger.log("Bootstrapping Secure Secret Storage");
         const delegateCryptoCallbacks = this.baseApis.cryptoCallbacks;
@@ -1116,7 +1119,7 @@ export class Crypto extends TypedEventEmitter<CryptoEvent, CryptoEventHandlerMap
         }
 
         const operation = builder.buildOperation();
-        await operation.apply(this);
+        await operation.apply(this, brand);
         // this persists private keys and public keys as trusted,
         // only do this if apply succeeded for now as retry isn't in place yet
         await builder.persist(this);

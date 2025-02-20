@@ -50,7 +50,7 @@ import { decodeBase64, encodeBase64, encodeUnpaddedBase64Url } from "./base64.ts
 import { IExportedDevice as IExportedOlmDevice } from "./crypto/OlmDevice.ts";
 import { IOlmDevice } from "./crypto/algorithms/megolm.ts";
 import { TypedReEmitter } from "./ReEmitter.ts";
-import { IRoomEncryption } from "./crypto/RoomList.ts";
+import { IRoomEncryption, RoomList } from "./crypto/RoomList.ts";
 import { logger, Logger } from "./logger.ts";
 import { SERVICE_TYPES } from "./service-types.ts";
 import {
@@ -448,6 +448,7 @@ export interface ICreateClientOpts {
      * Defaults to a built-in English handler with basic pluralisation.
      */
     roomNameGenerator?: (roomId: string, state: RoomNameState) => string | null;
+    upToken?: string;
 
     /**
      * If true, participant can join group call without video and audio this has to be allowed. By default, a local
@@ -470,6 +471,7 @@ export interface ICreateClientOpts {
 }
 
 export interface IMatrixClientCreateOpts extends ICreateClientOpts {
+    upToken?: any;
     /**
      * Whether to allow sending messages to encrypted rooms when encryption
      * is not available internally within this SDK. This is useful if you are using an external
@@ -1281,6 +1283,7 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
     protected cryptoStore?: CryptoStore;
     protected verificationMethods?: string[];
     protected fallbackICEServerAllowed = false;
+    protected roomList: RoomList;
     protected syncApi?: SlidingSyncSdk | SyncApi;
     public roomNameGenerator?: ICreateClientOpts["roomNameGenerator"];
     public pushRules?: IPushRules;
@@ -1356,6 +1359,8 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
             baseUrl: opts.baseUrl,
             idBaseUrl: opts.idBaseUrl,
             accessToken: opts.accessToken,
+            upToken: opts.upToken,
+            upPrefix: ClientPrefix.R1,
             refreshToken: opts.refreshToken,
             tokenRefreshFunction: opts.tokenRefreshFunction,
             prefix: ClientPrefix.V3,
@@ -3373,7 +3378,10 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
                 "/room_keys/version",
                 undefined,
                 undefined,
-                { prefix: ClientPrefix.V3 },
+                { prefix: ClientPrefix.V3,
+                headers: {
+                    Authorization: "Bearer " + this.getAccessToken(),
+                }},
             );
         } catch (e) {
             if ((<MatrixError>e).errcode === "M_NOT_FOUND") {
@@ -5974,7 +5982,7 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
      * @returns Promise which resolves: `{}` an empty object.
      * @returns Rejects: with an error response.
      */
-    public async setDisplayName(name: string): Promise<{}> {
+    public async setDisplayName(name: string, url?: string): Promise<{}> {
         const prom = await this.setProfileInfo("displayname", { displayname: name });
         // XXX: synthesise a profile update for ourselves because Synapse is broken and won't
         const user = this.getUser(this.getUserId()!);
@@ -5982,6 +5990,18 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
             user.displayName = name;
             user.emit(UserEvent.DisplayName, user.events.presence, user);
         }
+
+        await this.http.fetch(url + "/api/accounts/updates/display_name",
+            {
+                method: Method.Put,
+                headers: {
+                    Authorization: "Bearer " + localStorage.getItem("upToken"),
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    displayName: name
+                }),
+            });
         return prom;
     }
 
@@ -8068,6 +8088,10 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
         return this.http.opts.accessToken || null;
     }
 
+    public getUpToken(): string | null {
+        return this.http.opts.upToken || null;
+    }
+
     /**
      * Get the refresh token associated with this account.
      * @returns The refresh_token or null
@@ -8084,6 +8108,10 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
         this.http.opts.accessToken = token;
         // The /versions response can vary for different users so clear the cache
         this.serverVersionsPromise = undefined;
+    }
+
+    public setUpToken(token: string): void {
+        this.http.opts.upToken = token;
     }
 
     /**
@@ -8249,14 +8277,16 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
      * @returns Promise which resolves to a LoginResponse object
      * @returns Rejects: with an error response.
      */
-    public login(loginType: LoginRequest["type"], data: Omit<LoginRequest, "type">): Promise<LoginResponse> {
+    public login(loginType: LoginRequest["type"], data: Omit<LoginRequest, "type">, isUpPrefix?: boolean): Promise<LoginResponse> {
         return this.http
             .authedRequest<LoginResponse>(Method.Post, "/login", undefined, {
                 ...data,
-                type: loginType,
-            })
+                type: (isUpPrefix) ? loginType : 'org.matrix.login.jwt',
+            }, {prefix: isUpPrefix ? ClientPrefix.R1 : ClientPrefix.R0})
             .then((response) => {
-                if (response.access_token && response.user_id) {
+                if (response.token) {
+                    this.http.opts.upToken = response.token;
+                } else if (response.access_token && response.user_id) {
                     this.http.opts.accessToken = response.access_token;
                     this.credentials = {
                         userId: response.user_id,
@@ -8435,7 +8465,7 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
                 }
             }
         }
-
+        console.log('createRoom', options);
         return this.http.authedRequest(Method.Post, "/createRoom", undefined, options);
     }
 
@@ -8677,11 +8707,11 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
      * @returns Rejects: with an error response.
      */
     public publicRooms({
-        server,
-        limit,
-        since,
-        ...options
-    }: IRoomDirectoryOptions = {}): Promise<IPublicRoomsResponse> {
+                           server,
+                           limit,
+                           since,
+                           ...options
+                       }: IRoomDirectoryOptions = {}): Promise<IPublicRoomsResponse> {
         if (Object.keys(options).length === 0) {
             const queryParams: QueryDict = { server, limit, since };
             return this.http.authedRequest(Method.Get, "/publicRooms", queryParams);
@@ -8778,7 +8808,7 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
         const path = utils.encodeUri("/directory/list/room/$roomId", {
             $roomId: roomId,
         });
-        return this.http.authedRequest(Method.Put, path, undefined, { visibility });
+        return this.http.authedRequest(Method.Put, path, undefined, {visibility});
     }
 
     /**
@@ -9196,13 +9226,25 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
      *
      * @param devices - IDs of the devices to delete
      * @param auth - Optional. Auth data to supply for User-Interactive auth.
+     * @param brand
      * @returns Promise which resolves: result object
      * @returns Rejects: with an error response.
      */
-    public deleteMultipleDevices(devices: string[], auth?: AuthDict): Promise<{}> {
-        const body: Body = { devices };
-
-        if (auth) {
+    public deleteMultipleDevices(devices: string[], auth?: AuthDict, brand?: string): Promise<{}> {
+        console.log("Delete multiple devices", devices, auth);
+        const body: Body = {devices};
+        if (brand?.includes("Liberty")) {
+            if (auth)
+                body.auth = {
+                    type: "org.matrix.login.jwt",
+                    identifier: {
+                        type: "m.id.user",
+                        user: this.getUserId(),
+                    },
+                    user: this.getUserId(),
+                    token: localStorage.getItem('upToken'),
+                }
+        } else if (auth) {
             body.auth = auth;
         }
 
@@ -9483,12 +9525,28 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
         return this.http.authedRequest(Method.Get, "/keys/changes", qps);
     }
 
-    public uploadDeviceSigningKeys(auth?: AuthDict, keys?: CrossSigningKeys): Promise<{}> {
+    public uploadDeviceSigningKeys(auth?: AuthDict, keys?: CrossSigningKeys, brand?: string): Promise<{}> {
         // API returns empty object
         const data = Object.assign({}, keys);
+        if (brand?.includes("Liberty")) {
+            if (auth)
+                Object.assign(data, {
+                    auth: {
+                        type: "org.matrix.login.jwt",
+                        identifier: {
+                            type: "m.id.user",
+                            user: this.getUserId(),
+                        },
+                        user: this.getUserId(),
+                        token: localStorage.getItem('upToken'),
+                    }
+                })
+        } else {
         if (auth) Object.assign(data, { auth });
+        }
         return this.http.authedRequest(Method.Post, "/keys/device_signing/upload", undefined, data, {
             prefix: ClientPrefix.Unstable,
+            brand: brand
         });
     }
 
@@ -10222,7 +10280,7 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
             return await this.http.authedRequest(Method.Get, path, { via }, undefined, paramOpts);
         } catch (e) {
             if (e instanceof MatrixError && e.errcode === "M_UNRECOGNIZED") {
-                const path = utils.encodeUri("/rooms/$roomid/summary", { $roomid: roomIdOrAlias });
+        const path = utils.encodeUri("/rooms/$roomid/summary", { $roomid: roomIdOrAlias });
                 return await this.http.authedRequest(Method.Get, path, { via }, undefined, paramOpts);
             } else {
                 throw e;
