@@ -77,6 +77,7 @@ import { compareEventOrdering } from "./compare-event-ordering.ts";
 import * as utils from "../utils.ts";
 import { KnownMembership, type Membership } from "../@types/membership.ts";
 import { type Capabilities, type IRoomVersionsCapability, RoomVersionStability } from "../serverCapabilities.ts";
+import dis from "matrix-react-sdk/src/dispatcher/dispatcher"
 
 // These constants are used as sane defaults when the homeserver doesn't support
 // the m.room_versions capability. In practice, KNOWN_SAFE_ROOM_VERSION should be
@@ -992,6 +993,7 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
         if (prevMembership !== membership) {
             if (membership === KnownMembership.Leave) {
                 this.cleanupAfterLeaving();
+                dis.dispatch({action: "view_home_page"})
             }
             this.emit(RoomEvent.MyMembership, this, membership, prevMembership);
         }
@@ -3302,6 +3304,10 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
         return canInvite;
     }
 
+    public canRemoveRoom(userId: string): boolean {
+        const me = this.getMember(userId)
+        return me?.powerLevel==100;
+    }
     /**
      * Returns the join rule based on the m.room.join_rule state event, defaulting to `invite`.
      * @returns the join_rule applied to this room

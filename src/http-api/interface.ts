@@ -44,6 +44,7 @@ export interface IHttpOpts {
     extraParams?: Record<string, string>;
 
     accessToken?: string;
+    upToken?: string;
     /**
      * Used in conjunction with tokenRefreshFunction to attempt token refresh
      */
@@ -68,6 +69,7 @@ export interface IRequestOpts extends Pick<RequestInit, "priority"> {
      * If not specified, uses this.opts.baseUrl
      */
     baseUrl?: string;
+    brand?: string;
     /**
      * The full prefix to use e.g.
      * "/_matrix/client/v2_alpha". If not specified, uses this.opts.prefix.
@@ -90,6 +92,7 @@ export interface IRequestOpts extends Pick<RequestInit, "priority"> {
     // This is intended for use on endpoints where M_UNKNOWN_TOKEN is a valid/notable error response,
     // such as with token refreshes.
     inhibitLogoutEmit?: boolean;
+    upToken? : string
 }
 
 export interface IContentUri {
