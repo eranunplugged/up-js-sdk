@@ -77,7 +77,6 @@ import { compareEventOrdering } from "./compare-event-ordering.ts";
 import * as utils from "../utils.ts";
 import { KnownMembership, type Membership } from "../@types/membership.ts";
 import { type Capabilities, type IRoomVersionsCapability, RoomVersionStability } from "../serverCapabilities.ts";
-import dis from "matrix-react-sdk/src/dispatcher/dispatcher"
 
 // These constants are used as sane defaults when the homeserver doesn't support
 // the m.room_versions capability. In practice, KNOWN_SAFE_ROOM_VERSION should be
@@ -648,7 +647,7 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
             // the capability we're using to determine this.
             logger.warn(
                 "Refreshing room version capability because the server looks " +
-                    "to be supporting a newer room version we don't know about.",
+                "to be supporting a newer room version we don't know about.",
             );
 
             try {
@@ -993,7 +992,6 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
         if (prevMembership !== membership) {
             if (membership === KnownMembership.Leave) {
                 this.cleanupAfterLeaving();
-                dis.dispatch({action: "view_home_page"})
             }
             this.emit(RoomEvent.MyMembership, this, membership, prevMembership);
         }
@@ -1147,10 +1145,10 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
         const mostRecentEventInTimeline = eventsBefore[eventsBefore.length - 1];
         logger.log(
             `[refreshLiveTimeline for ${this.roomId}] at ` +
-                `mostRecentEventInTimeline=${mostRecentEventInTimeline && mostRecentEventInTimeline.getId()} ` +
-                `liveTimelineBefore=${liveTimelineBefore.toString()} ` +
-                `forwardPaginationToken=${forwardPaginationToken} ` +
-                `backwardPaginationToken=${backwardPaginationToken}`,
+            `mostRecentEventInTimeline=${mostRecentEventInTimeline && mostRecentEventInTimeline.getId()} ` +
+            `liveTimelineBefore=${liveTimelineBefore.toString()} ` +
+            `forwardPaginationToken=${forwardPaginationToken} ` +
+            `backwardPaginationToken=${backwardPaginationToken}`,
         );
 
         // Get the main TimelineSet
@@ -1216,8 +1214,8 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
         } else {
             logger.log(
                 `[refreshLiveTimeline for ${this.roomId}] \`/sync\` or some other request beat us to creating a new ` +
-                    `live timeline after we reset it. We'll use that instead since any events in the scrollback from ` +
-                    `this timeline will include the history.`,
+                `live timeline after we reset it. We'll use that instead since any events in the scrollback from ` +
+                `this timeline will include the history.`,
             );
         }
 
@@ -2795,7 +2793,7 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
     public updatePendingEvent(event: MatrixEvent, newStatus: EventStatus, newEventId?: string): void {
         logger.log(
             `setting pendingEvent status to ${newStatus} in ${event.getRoomId()} ` +
-                `event ID ${event.getId()} -> ${newEventId}`,
+            `event ID ${event.getId()} -> ${newEventId}`,
         );
 
         // if the message was sent, we expect an event id
@@ -2898,11 +2896,11 @@ export class Room extends ReadReceipt<RoomEmittedEvents, RoomEventHandlerMap> {
             if (liveTimeline.getPaginationToken(EventTimeline.FORWARDS)) {
                 throw new Error(
                     "live timeline " +
-                        i +
-                        " is no longer live - it has a pagination token " +
-                        "(" +
-                        liveTimeline.getPaginationToken(EventTimeline.FORWARDS) +
-                        ")",
+                    i +
+                    " is no longer live - it has a pagination token " +
+                    "(" +
+                    liveTimeline.getPaginationToken(EventTimeline.FORWARDS) +
+                    ")",
                 );
             }
             if (liveTimeline.getNeighbouringTimeline(EventTimeline.FORWARDS)) {
