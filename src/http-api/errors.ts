@@ -14,10 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-import { IMatrixApiError as IWidgetMatrixError } from "matrix-widget-api";
+import { type IMatrixApiError as IWidgetMatrixError } from "matrix-widget-api";
 
-import { IUsageLimit } from "../@types/partials.ts";
-import { MatrixEvent } from "../models/event.ts";
+import { type IUsageLimit } from "../@types/partials.ts";
+import { type MatrixEvent } from "../models/event.ts";
 
 interface IErrorJson extends Partial<IUsageLimit> {
     [key: string]: any; // extensible
@@ -167,9 +167,9 @@ export class MatrixError extends HTTPError {
 }
 
 /**
- * @returns The recommended delay in milliseconds to wait before retrying
- * the request that triggered {@link error}, or {@link defaultMs} if the
- * error was not due to rate-limiting or if no valid delay is recommended.
+ * @returns The recommended delay in milliseconds to wait before retrying the request.
+ * @param error - The error to check for a retry delay.
+ * @param defaultMs - The delay to use if the error was not due to rate-limiting or if no valid delay is recommended.
  */
 export function safeGetRetryAfterMs(error: unknown, defaultMs: number): number {
     if (!(error instanceof HTTPError) || !error.isRateLimitError()) {
@@ -195,5 +195,20 @@ export class ConnectionError extends Error {
 
     public get name(): string {
         return "ConnectionError";
+    }
+}
+
+/**
+ * Construct a TokenRefreshError. This indicates that a request failed due to the token being expired,
+ * and attempting to refresh said token also failed but in a way which was not indicative of token invalidation.
+ * Assumed to be a temporary failure.
+ */
+export class TokenRefreshError extends Error {
+    public constructor(cause?: Error) {
+        super(cause?.message ?? "");
+    }
+
+    public get name(): string {
+        return "TokenRefreshError";
     }
 }

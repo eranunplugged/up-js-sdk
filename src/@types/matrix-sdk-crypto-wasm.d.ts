@@ -17,11 +17,6 @@ limitations under the License.
 import type * as RustSdkCryptoJs from "@matrix-org/matrix-sdk-crypto-wasm";
 
 declare module "@matrix-org/matrix-sdk-crypto-wasm" {
-    interface OlmMachine {
-        importSecretsBundle(bundle: RustSdkCryptoJs.SecretsBundle): Promise<void>;
-        exportSecretsBundle(): Promise<RustSdkCryptoJs.SecretsBundle>;
-    }
-
     interface SecretsBundle {
         // eslint-disable-next-line @typescript-eslint/naming-convention
         to_json(): Promise<{

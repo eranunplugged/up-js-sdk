@@ -14,21 +14,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-import { Mocked } from "jest-mock";
+import { type Mocked } from "jest-mock";
 
 import {
-    AccountDataClient,
+    type AccountDataClient,
     calculateKeyCheck,
-    PassphraseInfo,
-    SecretStorageCallbacks,
-    SecretStorageKeyDescriptionAesV1,
-    SecretStorageKeyDescriptionCommon,
+    type PassphraseInfo,
+    type SecretStorageCallbacks,
+    type SecretStorageKeyDescriptionAesV1,
+    type SecretStorageKeyDescriptionCommon,
+    type ServerSideSecretStorage,
     ServerSideSecretStorageImpl,
     trimTrailingEquals,
 } from "../../src/secret-storage";
-import { randomString } from "../../src/randomstring";
-import { SecretInfo } from "../../src/secret-storage.ts";
-import { AccountDataEvents } from "../../src";
+import { secureRandomString } from "../../src/randomstring";
+import { type SecretInfo } from "../../src/secret-storage.ts";
+import { type AccountDataEvents, ClientEvent, MatrixEvent, TypedEventEmitter } from "../../src";
+import { defer, type IDeferred } from "../../src/utils";
 
 declare module "../../src/@types/event" {
     interface SecretStorageAccountDataEvents {
@@ -177,7 +179,7 @@ describe("ServerSideSecretStorageImpl", function () {
         it("should return true for a correct key check", async function () {
             const secretStorage = new ServerSideSecretStorageImpl({} as AccountDataClient, {});
 
-            const myKey = new TextEncoder().encode(randomString(32));
+            const myKey = new TextEncoder().encode(secureRandomString(32));
             const { iv, mac } = await calculateKeyCheck(myKey);
 
             const keyInfo: SecretStorageKeyDescriptionAesV1 = {
@@ -241,11 +243,16 @@ describe("ServerSideSecretStorageImpl", function () {
     });
 
     describe("store", () => {
-        it("should ignore keys with unknown algorithm", async function () {
-            const accountDataAdapter = mockAccountDataClient();
-            const mockCallbacks = { getSecretStorageKey: jest.fn() } as Mocked<SecretStorageCallbacks>;
-            const secretStorage = new ServerSideSecretStorageImpl(accountDataAdapter, mockCallbacks);
+        let secretStorage: ServerSideSecretStorage;
+        let accountDataAdapter: Mocked<AccountDataClient>;
 
+        beforeEach(() => {
+            accountDataAdapter = mockAccountDataClient();
+            const mockCallbacks = { getSecretStorageKey: jest.fn() } as Mocked<SecretStorageCallbacks>;
+            secretStorage = new ServerSideSecretStorageImpl(accountDataAdapter, mockCallbacks);
+        });
+
+        it("should ignore keys with unknown algorithm", async function () {
             // stub out getAccountData to return a key with an unknown algorithm
             const storedKey = { algorithm: "badalg" } as SecretStorageKeyDescriptionCommon;
             async function mockGetAccountData<K extends keyof AccountDataEvents>(
@@ -272,6 +279,83 @@ describe("ServerSideSecretStorageImpl", function () {
             // eslint-disable-next-line no-console
             expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("unknown algorithm"));
         });
+
+        it("should set the secret with an empty object when the value is null", async function () {
+            await secretStorage.store("mySecret", null);
+            expect(accountDataAdapter.setAccountData).toHaveBeenCalledWith("mySecret", {});
+        });
+    });
+
+    describe("setDefaultKeyId", function () {
+        let secretStorage: ServerSideSecretStorage;
+        let accountDataAdapter: Mocked<AccountDataClient>;
+        let accountDataPromise: IDeferred<void>;
+        beforeEach(() => {
+            accountDataAdapter = mockAccountDataClient();
+            accountDataPromise = defer();
+            accountDataAdapter.setAccountData.mockImplementation(() => {
+                accountDataPromise.resolve();
+                return Promise.resolve({});
+            });
+
+            secretStorage = new ServerSideSecretStorageImpl(accountDataAdapter, {});
+        });
+
+        it("should set the default key id", async function () {
+            const setDefaultPromise = secretStorage.setDefaultKeyId("keyId");
+            await accountDataPromise.promise;
+
+            expect(accountDataAdapter.setAccountData).toHaveBeenCalledWith("m.secret_storage.default_key", {
+                key: "keyId",
+            });
+
+            accountDataAdapter.emit(
+                ClientEvent.AccountData,
+                new MatrixEvent({
+                    type: "m.secret_storage.default_key",
+                    content: { key: "keyId" },
+                }),
+            );
+            await setDefaultPromise;
+        });
+
+        it("should set the default key id with a null key id", async function () {
+            const setDefaultPromise = secretStorage.setDefaultKeyId(null);
+            await accountDataPromise.promise;
+
+            expect(accountDataAdapter.setAccountData).toHaveBeenCalledWith("m.secret_storage.default_key", {});
+
+            accountDataAdapter.emit(
+                ClientEvent.AccountData,
+                new MatrixEvent({
+                    type: "m.secret_storage.default_key",
+                    content: {},
+                }),
+            );
+            await setDefaultPromise;
+        });
+    });
+
+    describe("getDefaultKeyId", function () {
+        it("should return null when there is no key", async function () {
+            const accountDataAdapter = mockAccountDataClient();
+            const secretStorage = new ServerSideSecretStorageImpl(accountDataAdapter, {});
+            expect(await secretStorage.getDefaultKeyId()).toBe(null);
+        });
+
+        it("should return the key id when there is a key", async function () {
+            const accountDataAdapter = mockAccountDataClient();
+            accountDataAdapter.getAccountDataFromServer.mockResolvedValue({ key: "keyId" });
+            const secretStorage = new ServerSideSecretStorageImpl(accountDataAdapter, {});
+            expect(await secretStorage.getDefaultKeyId()).toBe("keyId");
+        });
+
+        it("should return null when an empty object is in the account data", async function () {
+            const accountDataAdapter = mockAccountDataClient();
+            accountDataAdapter.getAccountDataFromServer.mockResolvedValue({});
+            const secretStorage = new ServerSideSecretStorageImpl(accountDataAdapter, {});
+            expect(await secretStorage.getDefaultKeyId()).toBe(null);
+        });
     });
 });
 
@@ -291,8 +375,13 @@ describe("trimTrailingEquals", () => {
 });
 
 function mockAccountDataClient(): Mocked<AccountDataClient> {
+    const eventEmitter = new TypedEventEmitter();
     return {
         getAccountDataFromServer: jest.fn().mockResolvedValue(null),
         setAccountData: jest.fn().mockResolvedValue({}),
+        on: eventEmitter.on.bind(eventEmitter),
+        off: eventEmitter.off.bind(eventEmitter),
+        removeListener: eventEmitter.removeListener.bind(eventEmitter),
+        emit: eventEmitter.emit.bind(eventEmitter),
     } as unknown as Mocked<AccountDataClient>;
 }

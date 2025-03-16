@@ -17,20 +17,20 @@ limitations under the License.
 import type { SecretsBundle } from "@matrix-org/matrix-sdk-crypto-wasm";
 import type { IMegolmSessionData } from "../@types/crypto.ts";
 import type { ToDeviceBatch, ToDevicePayload } from "../models/ToDeviceMessage.ts";
-import { Room } from "../models/room.ts";
-import { DeviceMap } from "../models/device.ts";
-import { UIAuthCallback } from "../interactive-auth.ts";
-import { PassphraseInfo, SecretStorageKeyDescription } from "../secret-storage.ts";
-import { VerificationRequest } from "./verification.ts";
+import { type Room } from "../models/room.ts";
+import { type DeviceMap } from "../models/device.ts";
+import { type UIAuthCallback } from "../interactive-auth.ts";
+import { type PassphraseInfo, type SecretStorageKeyDescription } from "../secret-storage.ts";
+import { type VerificationRequest } from "./verification.ts";
 import {
-    BackupTrustInfo,
-    KeyBackupCheck,
-    KeyBackupInfo,
-    KeyBackupRestoreOpts,
-    KeyBackupRestoreResult,
+    type BackupTrustInfo,
+    type KeyBackupCheck,
+    type KeyBackupInfo,
+    type KeyBackupRestoreOpts,
+    type KeyBackupRestoreResult,
 } from "./keybackup.ts";
-import { ISignatures } from "../@types/signed.ts";
-import { MatrixEvent } from "../models/event.ts";
+import { type ISignatures } from "../@types/signed.ts";
+import { type MatrixEvent } from "../models/event.ts";
 
 /**
  * `matrix-js-sdk/lib/crypto-api`: End-to-end encryption support.
@@ -40,6 +40,37 @@ import { MatrixEvent } from "../models/event.ts";
  *
  * @packageDocumentation
  */
+
+/**
+ * The options to start device dehydration.
+ */
+export interface StartDehydrationOpts {
+    /**
+     * Force creation of a new dehydration key, even if there is already an
+     * existing dehydration key. If `false`, and `onlyIfKeyCached` is `false`, a
+     * new key will be created if there is no existing dehydration key, whether
+     * already cached in our local storage or stored in Secret Storage.
+     *
+     * Checking for the presence of the key in Secret Storage may result in the
+     * `getSecretStorageKey` callback being called.
+     *
+     * Defaults to `false`.
+     */
+    createNewKey?: boolean;
+    /**
+     * Only start dehydration if we have a dehydration key cached in our local
+     * storage. If `true`, Secret Storage will not be checked. Defaults to
+     * `false`.
+     */
+    onlyIfKeyCached?: boolean;
+    /**
+     * Try to rehydrate a device before creating a new dehydrated device.
+     * Setting this to `false` may be useful for situations where the client is
+     * known to pre-date the dehydrated device, and so rehydration is
+     * unnecessary. Defaults to `true`.
+     */
+    rehydrate?: boolean;
+}
 
 /**
  * Public interface to the cryptography parts of the js-sdk
@@ -222,6 +253,15 @@ export interface CryptoApi {
     pinCurrentUserIdentity(userId: string): Promise<void>;
 
     /**
+     * Remove the requirement for this identity to be verified, and pin it.
+     *
+     * This is useful if the user was previously verified but is not anymore
+     * ({@link UserVerificationStatus.wasCrossSigningVerified}) and it is not possible to verify him again now.
+     *
+     */
+    withdrawVerificationRequirement(userId: string): Promise<void>;
+
+    /**
      * Get the verification status of a given device.
      *
      * @param userId - The ID of the user whose device is to be checked.
@@ -243,8 +283,6 @@ export interface CryptoApi {
      * @param verified - whether to mark the device as verified. Defaults to 'true'.
      *
      * @throws an error if the device is unknown, or has not published any encryption keys.
-     *
-     * @remarks Fires {@link matrix.CryptoEvent.DeviceVerificationChanged}
      */
     setDeviceVerified(userId: string, deviceId: string, verified?: boolean): Promise<void>;
 
@@ -396,6 +434,25 @@ export interface CryptoApi {
         payload: ToDevicePayload,
     ): Promise<ToDeviceBatch>;
 
+    /**
+     * Reset the encryption of the user by going through the following steps:
+     * - Remove the dehydrated device and stop the periodic creation of dehydrated devices.
+     * - Disable backing up room keys and delete any existing backups.
+     * - Remove the default secret storage key from the account data (ie: the recovery key).
+     * - Reset the cross-signing keys.
+     * - Create a new key backup.
+     *
+     * Note that the dehydrated device will be removed, but will not be replaced
+     * and it will not schedule creating new dehydrated devices.  To do this,
+     * {@link startDehydration} should be called after a new secret storage key
+     * is created.
+     *
+     * @param authUploadDeviceSigningKeys - Callback to authenticate the upload of device signing keys.
+     *      Used when resetting the cross signing keys.
+     *      See {@link BootstrapCrossSigningOpts#authUploadDeviceSigningKeys}.
+     */
+    resetEncryption(authUploadDeviceSigningKeys: UIAuthCallback<void>): Promise<void>;
+
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     //
     // Device/User verification
@@ -533,7 +590,7 @@ export interface CryptoApi {
     /**
      * Determine if a key backup can be trusted.
      *
-     * @param info - key backup info dict from {@link matrix.MatrixClient.getKeyBackupVersion}.
+     * @param info - key backup info dict from {@link CryptoApi.getKeyBackupInfo}.
      */
     isKeyBackupTrusted(info: KeyBackupInfo): Promise<BackupTrustInfo>;
 
@@ -627,10 +684,11 @@ export interface CryptoApi {
     /**
      * Start using device dehydration.
      *
-     * - Rehydrates a dehydrated device, if one is available.
+     * - Rehydrates a dehydrated device, if one is available and `opts.rehydrate`
+     *   is `true`.
      * - Creates a new dehydration key, if necessary, and stores it in Secret
      *   Storage.
-     *   - If `createNewKey` is set to true, always creates a new key.
+     *   - If `opts.createNewKey` is set to true, always creates a new key.
      *   - If a dehydration key is not available, creates a new one.
      * - Creates a new dehydrated device, and schedules periodically creating
      *   new dehydrated devices.
@@ -639,11 +697,11 @@ export interface CryptoApi {
      * `true`, and must not be called until after cross-signing and secret
      * storage have been set up.
      *
-     * @param createNewKey - whether to force creation of a new dehydration key.
-     *   This can be used, for example, if Secret Storage is being reset.  Defaults
-     *   to false.
+     * @param opts - options for device dehydration. For backwards compatibility
+     *     with old code, a boolean can be given here, which will be treated as
+     *     the `createNewKey` option. However, this is deprecated.
      */
-    startDehydration(createNewKey?: boolean): Promise<void>;
+    startDehydration(opts?: StartDehydrationOpts | boolean): Promise<void>;
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     //
@@ -939,7 +997,7 @@ export class DeviceVerificationStatus {
      * Check if we should consider this device "verified".
      *
      * A device is "verified" if either:
-     *  * it has been manually marked as such via {@link matrix.MatrixClient.setDeviceVerified}.
+     *  * it has been manually marked as such via {@link CryptoApi.setDeviceVerified}.
      *  * it has been cross-signed with a verified signing key, **and** the client has been configured to trust
      *    cross-signed devices via {@link CryptoApi.setTrustCrossSignedDevices}.
      *
@@ -951,17 +1009,71 @@ export class DeviceVerificationStatus {
 }
 
 /**
+ * Enum representing the different stages of importing room keys.
+ *
+ * This is the type of the `stage` property of {@link ImportRoomKeyProgressData}.
+ */
+export enum ImportRoomKeyStage {
+    /**
+     * The stage where room keys are being fetched.
+     *
+     * @see {@link ImportRoomKeyFetchProgress}.
+     */
+    Fetch = "fetch",
+    /**
+     * The stage where room keys are being loaded.
+     *
+     * @see {@link ImportRoomKeyLoadProgress}.
+     */
+    LoadKeys = "load_keys",
+}
+
+/**
+ * Type representing the progress during the 'fetch' stage of the room key import process.
+ *
+ * @see {@link ImportRoomKeyProgressData}.
+ */
+export type ImportRoomKeyFetchProgress = {
+    /**
+     * The current stage of the import process.
+     */
+    stage: ImportRoomKeyStage.Fetch;
+};
+
+/**
+ * Type representing the progress during the 'load_keys' stage of the room key import process.
+ *
+ * @see {@link ImportRoomKeyProgressData}.
+ */
+export type ImportRoomKeyLoadProgress = {
+    /**
+     * The current stage of the import process.
+     */
+    stage: ImportRoomKeyStage.LoadKeys;
+
+    /**
+     * The number of successfully loaded room keys so far.
+     */
+    successes: number;
+
+    /**
+     * The number of room keys that failed to load so far.
+     */
+    failures: number;
+
+    /**
+     * The total number of room keys being loaded.
+     */
+    total: number;
+};
+
+/**
  * Room key import progress report.
  * Used when calling {@link CryptoApi#importRoomKeys},
  * {@link CryptoApi#importRoomKeysAsJson} or {@link CryptoApi#restoreKeyBackup} as the parameter of
  * the progressCallback. Used to display feedback.
  */
-export interface ImportRoomKeyProgressData {
-    stage: string; // TODO: Enum
-    successes?: number;
-    failures?: number;
-    total?: number;
-}
+export type ImportRoomKeyProgressData = ImportRoomKeyFetchProgress | ImportRoomKeyLoadProgress;
 
 /**
  * Options object for {@link CryptoApi#importRoomKeys} and

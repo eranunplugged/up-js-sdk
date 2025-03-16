@@ -1,3 +1,106 @@
+Changes in [37.1.0](https://github.com/matrix-org/matrix-js-sdk/releases/tag/v37.1.0) (2025-03-11)
+==================================================================================================
+## 🦖 Deprecations
+
+* MatrixRTC: MembershipManager test cases and deprecation of MatrixRTCSession.room ([#4713](https://github.com/matrix-org/matrix-js-sdk/pull/4713)). Contributed by @toger5.
+
+## ✨ Features
+
+* Add `EventType.SecretRequest` and `EventType.SecretSend` ([#4728](https://github.com/matrix-org/matrix-js-sdk/pull/4728)). Contributed by @richvdh.
+* Attest npm package provenance ([#4724](https://github.com/matrix-org/matrix-js-sdk/pull/4724)). Contributed by @t3chguy.
+* Report backup key import progress on start and improve types ([#4711](https://github.com/matrix-org/matrix-js-sdk/pull/4711)). Contributed by @ajbura.
+
+## 🐛 Bug Fixes
+
+* Handle unexpected token refresh failures gracefully ([#4731](https://github.com/matrix-org/matrix-js-sdk/pull/4731)). Contributed by @t3chguy.
+* Fix idempotency issue around token refresh ([#4730](https://github.com/matrix-org/matrix-js-sdk/pull/4730)). Contributed by @t3chguy.
+* Delete the dehydrated device when resetEncryption is called ([#4727](https://github.com/matrix-org/matrix-js-sdk/pull/4727)). Contributed by @uhoreg.
+
+
+Changes in [37.0.0](https://github.com/matrix-org/matrix-js-sdk/releases/tag/v37.0.0) (2025-02-25)
+==================================================================================================
+## 🚨 BREAKING CHANGES
+
+* Remove deprecated `PrefixedLogger` interface ([#4705](https://github.com/matrix-org/matrix-js-sdk/pull/4705)). Contributed by @richvdh.
+* Remove legacy crypto ([#4653](https://github.com/matrix-org/matrix-js-sdk/pull/4653)). Contributed by @florianduros.
+
+## 🦖 Deprecations
+
+* Improve types around User Interactive Auth ([#4709](https://github.com/matrix-org/matrix-js-sdk/pull/4709)). Contributed by @t3chguy.
+
+## ✨ Features
+
+* Fix typos in client.ts ([#4715](https://github.com/matrix-org/matrix-js-sdk/pull/4715)). Contributed by @toger5.
+* Enable key upload to backups where we have the decryption key ([#4677](https://github.com/matrix-org/matrix-js-sdk/pull/4677)). Contributed by @ajbura.
+* Remove deprecated `PrefixedLogger` interface ([#4705](https://github.com/matrix-org/matrix-js-sdk/pull/4705)). Contributed by @richvdh.
+* `MatrixClient.setAccountData`: await remote echo. ([#4695](https://github.com/matrix-org/matrix-js-sdk/pull/4695)). Contributed by @richvdh.
+
+## 🐛 Bug Fixes
+
+* Improve types around User Interactive Auth ([#4709](https://github.com/matrix-org/matrix-js-sdk/pull/4709)). Contributed by @t3chguy.
+* Fix `resetEncryption` to remove secrets in 4S ([#4683](https://github.com/matrix-org/matrix-js-sdk/pull/4683)). Contributed by @florianduros.
+
+
+Changes in [36.2.0](https://github.com/matrix-org/matrix-js-sdk/releases/tag/v36.2.0) (2025-02-11)
+==================================================================================================
+## 🦖 Deprecations
+
+* [Backport staging] Deprecate parameter and functions using legacy crypto in `models/event.ts` ([#4700](https://github.com/matrix-org/matrix-js-sdk/pull/4700)). Contributed by @RiotRobot.
+
+## ✨ Features
+
+* Improve types around Terms ([#4674](https://github.com/matrix-org/matrix-js-sdk/pull/4674)). Contributed by @t3chguy.
+* Provide more options for starting dehydration ([#4664](https://github.com/matrix-org/matrix-js-sdk/pull/4664)). Contributed by @uhoreg.
+* Device Dehydration | js-sdk: store/load dehydration key ([#4599](https://github.com/matrix-org/matrix-js-sdk/pull/4599)). Contributed by @BillCarsonFr.
+* Add unspecced backup disable flag ([#4661](https://github.com/matrix-org/matrix-js-sdk/pull/4661)). Contributed by @dbkr.
+* Switch OIDC primarily to new `/auth_metadata` API ([#4626](https://github.com/matrix-org/matrix-js-sdk/pull/4626)). Contributed by @t3chguy.
+* Add `CryptoApi.resetEncryption` ([#4614](https://github.com/matrix-org/matrix-js-sdk/pull/4614)). Contributed by @florianduros.
+
+## 🐛 Bug Fixes
+
+* Fix topic types ([#4678](https://github.com/matrix-org/matrix-js-sdk/pull/4678)). Contributed by @Half-Shot.
+* Handle empty m.room.topic ([#4673](https://github.com/matrix-org/matrix-js-sdk/pull/4673)). Contributed by @Half-Shot.
+* `CryptoApi.resetEncryption` should always create a new key backup ([#4648](https://github.com/matrix-org/matrix-js-sdk/pull/4648)). Contributed by @florianduros.
+
+
+Changes in [36.1.0](https://github.com/matrix-org/matrix-js-sdk/releases/tag/v36.1.0) (2025-01-28)
+==================================================================================================
+## ✨ Features
+
+* Deprecate `MatrixClient.login` and replace with `loginRequest` ([#4632](https://github.com/matrix-org/matrix-js-sdk/pull/4632)). Contributed by @richvdh.
+* Use `SyncCryptoCallback` api instead of legacy crypto in sliding sync ([#4624](https://github.com/matrix-org/matrix-js-sdk/pull/4624)). Contributed by @florianduros.
+* Distinguish room state and timeline events in embedded clients ([#4574](https://github.com/matrix-org/matrix-js-sdk/pull/4574)). Contributed by @robintown.
+* Allow setting default secret storage key id to null ([#4615](https://github.com/matrix-org/matrix-js-sdk/pull/4615)). Contributed by @florianduros.
+* Add authenticated media to getAvatarUrl in room and room-member models ([#4616](https://github.com/matrix-org/matrix-js-sdk/pull/4616)). Contributed by @m004.
+* Send MSC3981 'recurse' param on `/relations` endpoint on Matrix 1.10 servers ([#4023](https://github.com/matrix-org/matrix-js-sdk/pull/4023)). Contributed by @dbkr.
+
+## 🐛 Bug Fixes
+
+* [Backport staging] Revert "Distinguish room state and timeline events in embedded clients (#4574)" ([#4657](https://github.com/matrix-org/matrix-js-sdk/pull/4657)). Contributed by @RiotRobot.
+* Change randomString et al to be secure ([#4621](https://github.com/matrix-org/matrix-js-sdk/pull/4621)). Contributed by @dbkr.
+* Fix issue with sentinels being incorrect on m.room.member events ([#4609](https://github.com/matrix-org/matrix-js-sdk/pull/4609)). Contributed by @t3chguy.
+
+
+Changes in [36.0.0](https://github.com/matrix-org/matrix-js-sdk/releases/tag/v36.0.0) (2025-01-14)
+==================================================================================================
+## 🚨 BREAKING CHANGES
+
+* Remove support for "legacy" MSC3898 group calling in MatrixRTCSession and CallMembership ([#4583](https://github.com/matrix-org/matrix-js-sdk/pull/4583)). Contributed by @toger5.
+
+## ✨ Features
+
+* MatrixRTC: Implement expiry logic for CallMembership and additional test coverage ([#4587](https://github.com/matrix-org/matrix-js-sdk/pull/4587)). Contributed by @toger5.
+
+## 🐛 Bug Fixes
+
+* Don't retry on 4xx responses ([#4601](https://github.com/matrix-org/matrix-js-sdk/pull/4601)). Contributed by @dbkr.
+* Upgrade matrix-sdk-crypto-wasm to 12.1.0 ([#4596](https://github.com/matrix-org/matrix-js-sdk/pull/4596)). Contributed by @andybalaam.
+* Avoid key prompts when resetting crypto ([#4586](https://github.com/matrix-org/matrix-js-sdk/pull/4586)). Contributed by @dbkr.
+* Handle when aud OIDC claim is an Array ([#4584](https://github.com/matrix-org/matrix-js-sdk/pull/4584)). Contributed by @liamdiprose.
+* Save the key backup key to 4S during `bootstrapSecretStorage ` ([#4542](https://github.com/matrix-org/matrix-js-sdk/pull/4542)). Contributed by @dbkr.
+* Only re-prepare MatrixrRTC delayed disconnection event on 404  ([#4575](https://github.com/matrix-org/matrix-js-sdk/pull/4575)). Contributed by @toger5.
+
+
 Changes in [35.1.0](https://github.com/matrix-org/matrix-js-sdk/releases/tag/v35.1.0) (2024-12-18)
 ==================================================================================================
 This release updates matrix-sdk-crypto-wasm to fix a bug which could prevent loading stored crypto state from storage.

@@ -20,58 +20,63 @@ import * as RustSdkCryptoJs from "@matrix-org/matrix-sdk-crypto-wasm";
 import type { IEventDecryptionResult, IMegolmSessionData } from "../@types/crypto.ts";
 import { KnownMembership } from "../@types/membership.ts";
 import type { IDeviceLists, IToDeviceEvent } from "../sync-accumulator.ts";
-import type { IEncryptedEventInfo } from "../crypto/api.ts";
 import type { ToDevicePayload, ToDeviceBatch } from "../models/ToDeviceMessage.ts";
-import { MatrixEvent, MatrixEventEvent } from "../models/event.ts";
-import { Room } from "../models/room.ts";
-import { RoomMember } from "../models/room-member.ts";
+import { type MatrixEvent, MatrixEventEvent } from "../models/event.ts";
+import { type Room } from "../models/room.ts";
+import { type RoomMember } from "../models/room-member.ts";
 import {
-    BackupDecryptor,
-    CryptoBackend,
+    type BackupDecryptor,
+    type CryptoBackend,
     DecryptionError,
-    OnSyncCompletedData,
+    type OnSyncCompletedData,
 } from "../common-crypto/CryptoBackend.ts";
-import { logger, Logger, LogSpan } from "../logger.ts";
-import { IHttpOpts, MatrixHttpApi, Method } from "../http-api/index.ts";
+import { logger, type Logger, LogSpan } from "../logger.ts";
+import { type IHttpOpts, type MatrixHttpApi, Method } from "../http-api/index.ts";
 import { RoomEncryptor } from "./RoomEncryptor.ts";
 import { OutgoingRequestProcessor } from "./OutgoingRequestProcessor.ts";
 import { KeyClaimManager } from "./KeyClaimManager.ts";
 import { logDuration, MapWithDefault } from "../utils.ts";
 import {
-    BackupTrustInfo,
-    BootstrapCrossSigningOpts,
-    CreateSecretStorageOpts,
+    type BackupTrustInfo,
+    type BootstrapCrossSigningOpts,
+    type CreateSecretStorageOpts,
     CrossSigningKey,
-    CrossSigningKeyInfo,
-    CrossSigningStatus,
-    CryptoApi,
-    CryptoCallbacks,
+    type CrossSigningKeyInfo,
+    type CrossSigningStatus,
+    type CryptoApi,
+    type CryptoCallbacks,
     DecryptionFailureCode,
     DeviceVerificationStatus,
-    EventEncryptionInfo,
+    type EventEncryptionInfo,
     EventShieldColour,
     EventShieldReason,
-    GeneratedSecretStorageKey,
-    ImportRoomKeysOpts,
-    KeyBackupCheck,
-    KeyBackupInfo,
-    OwnDeviceKeys,
+    type GeneratedSecretStorageKey,
+    type ImportRoomKeysOpts,
+    type KeyBackupCheck,
+    type KeyBackupInfo,
+    type OwnDeviceKeys,
     UserVerificationStatus,
-    VerificationRequest,
+    type VerificationRequest,
     encodeRecoveryKey,
     deriveRecoveryKeyFromPassphrase,
-    DeviceIsolationMode,
+    type DeviceIsolationMode,
     AllDevicesIsolationMode,
     DeviceIsolationModeKind,
     CryptoEvent,
-    CryptoEventHandlerMap,
-    KeyBackupRestoreOpts,
-    KeyBackupRestoreResult,
+    type CryptoEventHandlerMap,
+    type KeyBackupRestoreOpts,
+    type KeyBackupRestoreResult,
+    type StartDehydrationOpts,
+    ImportRoomKeyStage,
 } from "../crypto-api/index.ts";
 import { deviceKeysToDeviceMap, rustDeviceToJsDevice } from "./device-converter.ts";
-import { IDownloadKeyResult, IQueryKeysRequest } from "../client.ts";
-import { Device, DeviceMap } from "../models/device.ts";
-import { SECRET_STORAGE_ALGORITHM_V1_AES, SecretStorageKey, ServerSideSecretStorage } from "../secret-storage.ts";
+import { type IDownloadKeyResult, type IQueryKeysRequest } from "../client.ts";
+import { type Device, type DeviceMap } from "../models/device.ts";
+import {
+    SECRET_STORAGE_ALGORITHM_V1_AES,
+    type SecretStorageKey,
+    type ServerSideSecretStorage,
+} from "../secret-storage.ts";
 import { CrossSigningIdentity } from "./CrossSigningIdentity.ts";
 import { secretStorageCanAccessSecrets, secretStorageContainsCrossSigningKeys } from "./secret-storage.ts";
 import { isVerificationEvent, RustVerificationRequest, verificationMethodIdentifierToMethod } from "./verification.ts";
@@ -79,15 +84,16 @@ import { EventType, MsgType } from "../@types/event.ts";
 import { TypedEventEmitter } from "../models/typed-event-emitter.ts";
 import { decryptionKeyMatchesKeyBackupInfo, RustBackupManager } from "./backup.ts";
 import { TypedReEmitter } from "../ReEmitter.ts";
-import { randomString } from "../randomstring.ts";
+import { secureRandomString } from "../randomstring.ts";
 import { ClientStoppedError } from "../errors.ts";
-import { ISignatures } from "../@types/signed.ts";
+import { type ISignatures } from "../@types/signed.ts";
 import { decodeBase64, encodeBase64 } from "../base64.ts";
 import { OutgoingRequestsManager } from "./OutgoingRequestsManager.ts";
 import { PerSessionKeyBackupDownloader } from "./PerSessionKeyBackupDownloader.ts";
 import { DehydratedDeviceManager } from "./DehydratedDeviceManager.ts";
 import { VerificationMethod } from "../types.ts";
 import { keyFromAuthData } from "../common-crypto/key-passphrase.ts";
+import { type UIAuthCallback } from "../interactive-auth.ts";
 
 const ALL_VERIFICATION_METHODS = [
     VerificationMethod.Sas,
@@ -182,11 +188,22 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
         );
         this.eventDecryptor = new EventDecryptor(this.logger, olmMachine, this.perSessionBackupDownloader);
 
+        // re-emit the events emitted by managers
         this.reemitter.reEmit(this.backupManager, [
             CryptoEvent.KeyBackupStatus,
             CryptoEvent.KeyBackupSessionsRemaining,
             CryptoEvent.KeyBackupFailed,
             CryptoEvent.KeyBackupDecryptionKeyCached,
+        ]);
+        this.reemitter.reEmit(this.dehydratedDeviceManager, [
+            CryptoEvent.DehydratedDeviceCreated,
+            CryptoEvent.DehydratedDeviceUploaded,
+            CryptoEvent.RehydrationStarted,
+            CryptoEvent.RehydrationProgress,
+            CryptoEvent.RehydrationCompleted,
+            CryptoEvent.RehydrationError,
+            CryptoEvent.DehydrationKeyCached,
+            CryptoEvent.DehydratedDeviceRotationError,
         ]);
 
         this.crossSigningIdentity = new CrossSigningIdentity(olmMachine, this.outgoingRequestProcessor, secretStorage);
@@ -266,64 +283,6 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
             throw new Error("to-device event was not decrypted in preprocessToDeviceMessages");
         }
         return await this.eventDecryptor.attemptEventDecryption(event, this.deviceIsolationMode);
-    }
-
-    /**
-     * Implementation of (deprecated) {@link MatrixClient#getEventEncryptionInfo}.
-     *
-     * @param event - event to inspect
-     */
-    public getEventEncryptionInfo(event: MatrixEvent): IEncryptedEventInfo {
-        const ret: Partial<IEncryptedEventInfo> = {};
-
-        ret.senderKey = event.getSenderKey() ?? undefined;
-        ret.algorithm = event.getWireContent().algorithm;
-
-        if (!ret.senderKey || !ret.algorithm) {
-            ret.encrypted = false;
-            return ret as IEncryptedEventInfo;
-        }
-        ret.encrypted = true;
-        ret.authenticated = true;
-        ret.mismatchedSender = true;
-        return ret as IEncryptedEventInfo;
-    }
-
-    /**
-     * Implementation of {@link CryptoBackend#checkUserTrust}.
-     *
-     * Stub for backwards compatibility.
-     *
-     */
-    public checkUserTrust(userId: string): UserVerificationStatus {
-        return new UserVerificationStatus(false, false, false);
-    }
-
-    /**
-     * Get the cross signing information for a given user.
-     *
-     * The cross-signing API is currently UNSTABLE and may change without notice.
-     *
-     * @param userId - the user ID to get the cross-signing info for.
-     *
-     * @returns the cross signing information for the user.
-     */
-    public getStoredCrossSigningForUser(userId: string): null {
-        // TODO
-        return null;
-    }
-
-    /**
-     * This function is unneeded for the rust-crypto.
-     * The cross signing key import and the device verification are done in {@link CryptoApi#bootstrapCrossSigning}
-     *
-     * The function is stub to keep the compatibility with the old crypto.
-     * More information: https://github.com/vector-im/element-web/issues/25648
-     *
-     * Implementation of {@link CryptoBackend#checkOwnCrossSigningTrust}
-     */
-    public async checkOwnCrossSigningTrust(): Promise<void> {
-        return;
     }
 
     /**
@@ -688,6 +647,20 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
     }
 
     /**
+     * Implementation of {@link CryptoApi#withdrawVerificationRequirement}.
+     */
+    public async withdrawVerificationRequirement(userId: string): Promise<void> {
+        const userIdentity: RustSdkCryptoJs.OtherUserIdentity | RustSdkCryptoJs.OwnUserIdentity | undefined =
+            await this.getOlmMachineOrThrow().getIdentity(new RustSdkCryptoJs.UserId(userId));
+
+        if (userIdentity === undefined) {
+            throw new Error("Cannot withdraw verification of unknown user");
+        }
+
+        await userIdentity.withdrawVerification();
+    }
+
+    /**
      * Implementation of {@link CryptoApi#isCrossSigningReady}
      */
     public async isCrossSigningReady(): Promise<boolean> {
@@ -811,9 +784,13 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
             await this.addSecretStorageKeyToSecretStorage(recoveryKey);
         }
 
-        const crossSigningStatus: RustSdkCryptoJs.CrossSigningStatus = await this.olmMachine.crossSigningStatus();
+        const crossSigningPrivateKeys: RustSdkCryptoJs.CrossSigningKeyExport | undefined =
+            await this.olmMachine.exportCrossSigningKeys();
         const hasPrivateKeys =
-            crossSigningStatus.hasMaster && crossSigningStatus.hasSelfSigning && crossSigningStatus.hasUserSigning;
+            crossSigningPrivateKeys &&
+            crossSigningPrivateKeys.masterKey !== undefined &&
+            crossSigningPrivateKeys.self_signing_key !== undefined &&
+            crossSigningPrivateKeys.userSigningKey !== undefined;
 
         // If we have cross-signing private keys cached, store them in secret
         // storage if they are not there already.
@@ -822,21 +799,6 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
             (isNewSecretStorageKeyNeeded || !(await secretStorageContainsCrossSigningKeys(this.secretStorage)))
         ) {
             this.logger.info("bootstrapSecretStorage: cross-signing keys not yet exported; doing so now.");
-
-            const crossSigningPrivateKeys: RustSdkCryptoJs.CrossSigningKeyExport =
-                await this.olmMachine.exportCrossSigningKeys();
-
-            if (!crossSigningPrivateKeys.masterKey) {
-                throw new Error("missing master key in cross signing private keys");
-            }
-
-            if (!crossSigningPrivateKeys.userSigningKey) {
-                throw new Error("missing user signing key in cross signing private keys");
-            }
-
-            if (!crossSigningPrivateKeys.self_signing_key) {
-                throw new Error("missing self signing key in cross signing private keys");
-            }
 
             await this.secretStorage.store("m.cross_signing.master", crossSigningPrivateKeys.masterKey);
             await this.secretStorage.store("m.cross_signing.user_signing", crossSigningPrivateKeys.userSigningKey);
@@ -956,7 +918,7 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
         if (password) {
             // Generate the key from the passphrase
             // first we generate a random salt
-            const salt = randomString(32);
+            const salt = secureRandomString(32);
             // then we derive the key from the passphrase
             const recoveryKey = await deriveRecoveryKeyFromPassphrase(
                 password,
@@ -1099,7 +1061,7 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
      * @returns the event id
      */
     private async sendVerificationRequestContent(roomId: string, verificationEventContent: string): Promise<string> {
-        const txId = randomString(32);
+        const txId = secureRandomString(32);
         // Send the verification request content to the DM room
         const { event_id: eventId } = await this.http.authedRequest<{ event_id: string }>(
             Method.Put,
@@ -1379,7 +1341,7 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
 
         try {
             opts?.progressCallback?.({
-                stage: "fetch",
+                stage: ImportRoomKeyStage.Fetch,
             });
 
             return await this.backupManager.restoreKeyBackup(backupVersion, backupDecryptor, opts);
@@ -1399,11 +1361,11 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
     /**
      * Implementation of {@link CryptoApi#startDehydration}.
      */
-    public async startDehydration(createNewKey?: boolean): Promise<void> {
+    public async startDehydration(opts: StartDehydrationOpts | boolean = {}): Promise<void> {
         if (!(await this.isCrossSigningReady()) || !(await this.isSecretStorageReady())) {
             throw new Error("Device dehydration requires cross-signing and secret storage to be set up");
         }
-        return await this.dehydratedDeviceManager.start(createNewKey);
+        return await this.dehydratedDeviceManager.start(opts || {});
     }
 
     /**
@@ -1470,6 +1432,43 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
         );
 
         return batch;
+    }
+
+    /**
+     * Implementation of {@link CryptoApi#resetEncryption}.
+     */
+    public async resetEncryption(authUploadDeviceSigningKeys: UIAuthCallback<void>): Promise<void> {
+        this.logger.debug("resetEncryption: resetting encryption");
+
+        // Delete the dehydrated device, since any existing one will be signed
+        // by the wrong cross-signing key
+        this.dehydratedDeviceManager.delete();
+
+        // Disable backup, and delete all the backups from the server
+        await this.backupManager.deleteAllKeyBackupVersions();
+
+        // Remove the stored secrets in the secret storage
+        await this.secretStorage.store("m.cross_signing.master", null);
+        await this.secretStorage.store("m.cross_signing.self_signing", null);
+        await this.secretStorage.store("m.cross_signing.user_signing", null);
+        await this.secretStorage.store("m.megolm_backup.v1", null);
+
+        // Remove the recovery key
+        const defaultKeyId = await this.secretStorage.getDefaultKeyId();
+        if (defaultKeyId) await this.secretStorage.store(`m.secret_storage.key.${defaultKeyId}`, null);
+        // Disable the recovery key and the secret storage
+        await this.secretStorage.setDefaultKeyId(null);
+
+        // Reset the cross-signing keys
+        await this.crossSigningIdentity.bootstrapCrossSigning({
+            setupNewCrossSigning: true,
+            authUploadDeviceSigningKeys,
+        });
+
+        // Create a new key backup
+        await this.resetKeyBackup();
+
+        this.logger.debug("resetEncryption: ended");
     }
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1814,7 +1813,7 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, CryptoEventH
      * @param name - The name of the secret received.
      */
     public async checkSecrets(name: string): Promise<void> {
-        const pendingValues: string[] = await this.olmMachine.getSecretsFromInbox(name);
+        const pendingValues: Set<string> = await this.olmMachine.getSecretsFromInbox(name);
         for (const value of pendingValues) {
             if (await this.handleSecretReceived(name, value)) {
                 // If we have a valid secret for that name there is no point of processing the other secrets values.
